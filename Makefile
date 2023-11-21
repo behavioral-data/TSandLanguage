@@ -24,6 +24,9 @@ endif
 data: 
 	$(PYTHON_INTERPRETER) src/data/make_dataset.py data/raw data/processed
 
+data_on_klone:
+	ln -s /gscratch/bdata/datasets/llms_and_timeseries/ data/processed
+
 ## Download Data from S3
 sync_data_from_s3:
 ifeq (default,$(PROFILE))
