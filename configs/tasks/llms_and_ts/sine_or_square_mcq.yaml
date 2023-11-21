@@ -1,0 +1,7 @@
+class_path: src.models.tasks.MultimodalMCQTask 
+init_args:
+  num_classes: 2
+  ts_column: series
+  cache_path: data/processed/sine_or_square_mcq
+  label_column: label
+  context_columns: [context]

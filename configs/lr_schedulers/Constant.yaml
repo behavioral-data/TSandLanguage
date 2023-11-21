@@ -1,0 +1,3 @@
+class_path: torch.optim.lr_scheduler.ConstantLR
+init_args:
+  factor: 1.0

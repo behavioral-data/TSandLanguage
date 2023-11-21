@@ -1,0 +1,3 @@
+class_path: torch.optim.lr_scheduler.CosineAnnealingLR
+init_args:
+  T_max: 10

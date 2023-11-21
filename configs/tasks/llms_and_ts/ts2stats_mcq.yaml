@@ -1,0 +1,9 @@
+class_path: src.models.tasks.MultimodalMCQTask 
+init_args:
+  num_classes: 4
+  ts_column: series
+  cache_path: data/processed/ts2stats_mcq
+  label_column: label
+  context_columns: [question]
+  format_abc_mcq: true
+  context_prefix: "Calculate the statistic from the time series:"

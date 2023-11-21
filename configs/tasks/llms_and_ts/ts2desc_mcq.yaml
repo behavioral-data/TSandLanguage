@@ -1,0 +1,10 @@
+class_path: src.models.tasks.MultimodalMCQTask 
+init_args:
+  num_classes: 4
+  ts_column: series
+  cache_path: data/processed/ts2desc_mcq
+  label_column: description
+  context_columns: []
+  context_prefix: "What description best relates to this time series?"
+  shuffle_labels: True
+  format_abc_mcq: True

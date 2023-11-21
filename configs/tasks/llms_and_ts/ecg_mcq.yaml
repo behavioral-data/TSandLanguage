@@ -1,0 +1,10 @@
+class_path: src.models.tasks.MultimodalMCQTask 
+init_args:
+  num_classes: 4
+  ts_column: mean_signal
+  cache_path: data/processed/ecg_mcq
+  label_column: report
+  format_abc_mcq: true
+  context_prefix: "Describe this ecq:"
+  context_columns: [meta_data]
+  shuffle_labels: true
