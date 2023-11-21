@@ -9,7 +9,7 @@ Time Series and Language
 **Note** If you're on the UW Slurm Cluster you will need to first load CUDA by running `module load cuda/12.2`
 
 ## Getting Data
-TODO
+If you're on the UW Klone cluster then you just need to run`make data_on_klone`. This will link the `bdata` directory to the project folder.
 
 # Running Jobs:
 
