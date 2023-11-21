@@ -3,13 +3,14 @@ Time Series and Language
 
 # Install
 ## Making the Environment
-1. Clone this repo
-2. Build the environment using `make create_environment`.
+1. Clone this repo.
+2. Build the environment using `make create_environment`. This can be very slow with stock Conda. If you have [Mamba](https://mamba.readthedocs.io/en/latest/) installed it will be much faster. 
 
 **Note** If you're on the UW Slurm Cluster you will need to first load CUDA by running `module load cuda/12.2`
 
 ## Getting Data
-If you're on the UW Klone cluster then you just need to run`make data_on_klone`. This will link the `bdata` directory to the project folder.
+If you're on the UW Klone cluster then you just need to run `make data_on_klone`. This will link the `bdata` directory to the project folder.
+If you're not on the UW cluter... TODO
 
 # Running Jobs:
 
