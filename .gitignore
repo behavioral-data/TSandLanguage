@@ -85,8 +85,7 @@ dask-worker-space/dask-worker-space/*
 
 #wandb
 wandb/
-models/
-
+/models
 
 #Slurm scripts
 slurm-utils/job_scripts
