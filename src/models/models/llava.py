@@ -1,17 +1,25 @@
-from typing import List, Sequence, Dict, Tuple
 import copy
-
-import torch
+from typing import Dict, List, Sequence, Tuple
+import os
+import shutil
+import warnings
 
 import numpy as np
-from torch import nn
-from llava.model.builder import load_pretrained_model
-from llava.constants import DEFAULT_IMAGE_TOKEN, IGNORE_INDEX
-from llava.mm_utils import tokenizer_image_token
+import torch
+import torchvision.transforms as transforms
 import transformers
 from llava import conversation as conversation_lib
+from llava.constants import (DEFAULT_IM_END_TOKEN, DEFAULT_IM_START_TOKEN,
+                             DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IMAGE_TOKEN,
+                             IGNORE_INDEX)
+from llava.mm_utils import tokenizer_image_token
+from llava.model.multimodal_projector.builder import build_vision_projector
+from llava.model.multimodal_encoder.builder import build_vision_tower
+from llava.model import *
 from PIL import Image
-import torchvision.transforms as transforms
+from torch import nn
+from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
+                          BitsAndBytesConfig)
 
 from src.models.models.bases import MultimodalModel
 
@@ -374,6 +382,140 @@ def llava_preprocess(
 
     return dict(input_ids=input_ids, labels=targets)
 
+
+def load_pretrained_llava(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda"):
+    kwargs = {"device_map": device_map}
+    
+    if 'mpt' in model_name.lower():
+        raise NotImplementedError("We only support LLaMA variants of LLaVA for now.")
+    
+    if load_8bit:
+        kwargs['load_in_8bit'] = True
+    elif load_4bit:
+        kwargs['load_in_4bit'] = True
+        kwargs['quantization_config'] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type='nf4'
+        )
+    else:
+        kwargs['torch_dtype'] = torch.float16
+
+    if 'llava' in model_name.lower():
+        # Load LLaVA model
+        if 'lora' in model_name.lower() and model_base is None:
+            warnings.warn('There is `lora` in model name but no `model_base` is provided. If you are loading a LoRA model, please provide the `model_base` argument. Detailed instruction: https://github.com/haotian-liu/LLaVA#launch-a-model-worker-lora-weights-unmerged.')
+        if 'lora' in model_name.lower() and model_base is not None:
+            lora_cfg_pretrained = AutoConfig.from_pretrained(model_path)
+            tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
+            print('Loading LLaVA from base model...')
+            model = LLaVATS.from_pretrained(model_base, low_cpu_mem_usage=True, config=lora_cfg_pretrained, **kwargs)
+            token_num, tokem_dim = model.lm_head.out_features, model.lm_head.in_features
+            if model.lm_head.weight.shape[0] != token_num:
+                model.lm_head.weight = torch.nn.Parameter(torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
+                model.model.embed_tokens.weight = torch.nn.Parameter(torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
+
+            print('Loading additional LLaVA weights...')
+            if os.path.exists(os.path.join(model_path, 'non_lora_trainables.bin')):
+                non_lora_trainables = torch.load(os.path.join(model_path, 'non_lora_trainables.bin'), map_location='cpu')
+            else:
+                # this is probably from HF Hub
+                from huggingface_hub import hf_hub_download
+                def load_from_hf(repo_id, filename, subfolder=None):
+                    cache_file = hf_hub_download(
+                        repo_id=repo_id,
+                        filename=filename,
+                        subfolder=subfolder)
+                    return torch.load(cache_file, map_location='cpu')
+                non_lora_trainables = load_from_hf(model_path, 'non_lora_trainables.bin')
+            non_lora_trainables = {(k[11:] if k.startswith('base_model.') else k): v for k, v in non_lora_trainables.items()}
+            if any(k.startswith('model.model.') for k in non_lora_trainables):
+                non_lora_trainables = {(k[6:] if k.startswith('model.') else k): v for k, v in non_lora_trainables.items()}
+            model.load_state_dict(non_lora_trainables, strict=False)
+
+            from peft import PeftModel
+            print('Loading LoRA weights...')
+            model = PeftModel.from_pretrained(model, model_path)
+            print('Merging LoRA weights...')
+            model = model.merge_and_unload()
+            print('Model is loaded...')
+        elif model_base is not None:
+            # this may be mm projector only
+            print('Loading LLaVA from base model...')
+
+            tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
+            cfg_pretrained = AutoConfig.from_pretrained(model_path)
+            model = LLaVATS.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
+
+            mm_projector_weights = torch.load(os.path.join(model_path, 'mm_projector.bin'), map_location='cpu')
+            mm_projector_weights = {k: v.to(torch.float16) for k, v in mm_projector_weights.items()}
+            model.load_state_dict(mm_projector_weights, strict=False)
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
+            model = LLaVATS.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
+    else:
+        # Load language model
+        if model_base is not None:
+            # PEFT model
+            from peft import PeftModel
+            tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
+            model = AutoModelForCausalLM.from_pretrained(model_base, torch_dtype=torch.float16, low_cpu_mem_usage=True, device_map="auto")
+            print(f"Loading LoRA weights from {model_path}")
+            model = PeftModel.from_pretrained(model, model_path)
+            print(f"Merging weights")
+            model = model.merge_and_unload()
+            print('Convert to FP16...')
+            model.to(torch.float16)
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
+            model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
+
+    image_processor = None
+
+    if 'llava' in model_name.lower():
+        mm_use_im_start_end = getattr(model.config, "mm_use_im_start_end", False)
+        mm_use_im_patch_token = getattr(model.config, "mm_use_im_patch_token", True)
+        if mm_use_im_patch_token:
+            tokenizer.add_tokens([DEFAULT_IMAGE_PATCH_TOKEN], special_tokens=True)
+        if mm_use_im_start_end:
+            tokenizer.add_tokens([DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN], special_tokens=True)
+        model.resize_token_embeddings(len(tokenizer))
+
+        vision_tower = model.get_vision_tower()
+        if not vision_tower.is_loaded:
+            vision_tower.load_model()
+        vision_tower.to(device=device, dtype=torch.float16)
+        image_processor = vision_tower.image_processor
+
+    if hasattr(model.config, "max_sequence_length"):
+        context_len = model.config.max_sequence_length
+    else:
+        context_len = 2048
+
+    return tokenizer, model, image_processor, context_len
+
+
+class LLaVATS(LlavaLlamaForCausalLM):
+    ''' Subclass the original LLaVA to make it work with time series encoders.
+    '''
+    def __init__(self, config):
+        # We move the intializiation of the vision_tower 
+        # to here so that we can control it.
+        if hasattr(config, "mm_vision_tower"):
+            mm_vision_tower = config.mm_vision_tower
+            del config.mm_vision_tower
+        else:
+            mm_vision_tower = None
+        
+        super().__init__(config) 
+        
+        if mm_vision_tower:
+            config.mm_vision_tower = mm_vision_tower
+            self.get_model().vision_tower = build_vision_tower(config, delay_load=True)
+            self.get_model().mm_projector = build_vision_projector(config)
+
+# This is the main entry point for the model
 class LLaVA(MultimodalModel):
     
     def __init__(self, hf_name_or_path : str,
@@ -387,7 +529,7 @@ class LLaVA(MultimodalModel):
         
         self.image_size = (224,224)
         self.tokenizer, self.model, self.image_processor, self.context_len \
-            = load_pretrained_model(hf_name_or_path, model_base, model_name)
+            = load_pretrained_llava(hf_name_or_path, model_base, model_name)
         
         self.ts_encoder = MatplotlibEncoder(dim=self.image_size[0])
         self.model.to(dtype=torch.bfloat16)
@@ -400,7 +542,7 @@ class LLaVA(MultimodalModel):
         
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = 0
-
+    
     def prepare_inputs(self, context: List[str], label: List[str], ts: List[np.array],
                         pad = True, max_len=512,):
         
@@ -469,21 +611,21 @@ class MatplotlibEncoder(nn.Module):
     
     def forward(self, ts: torch.Tensor) -> torch.Tensor:
 
-            import matplotlib.pyplot as plt
-            fig, ax = plt.subplots()
-            ax.plot(ts.cpu().numpy())
-            if not self.use_ticks:
-                ax.set_xticks([])
-                ax.set_yticks([])
-            fig.canvas.draw()
-            fig.tight_layout(pad=0)
-            width, height = fig.get_size_inches() * fig.get_dpi()
-            width, height = int(width), int(height)
-            image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8').reshape(height, width, 3)
-            plt.close(fig)
-            
-            # Resize the image
-            image = Image.fromarray(image)
-            image = transforms.Resize(self.output_shape[-2:])(image)
-            image = transforms.ToTensor()(image)
-            return image.type(ts.dtype).to(ts)
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots()
+        ax.plot(ts.cpu().numpy())
+        if not self.use_ticks:
+            ax.set_xticks([])
+            ax.set_yticks([])
+        fig.canvas.draw()
+        fig.tight_layout(pad=0)
+        width, height = fig.get_size_inches() * fig.get_dpi()
+        width, height = int(width), int(height)
+        image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8').reshape(height, width, 3)
+        plt.close(fig)
+        
+        # Resize the image
+        image = Image.fromarray(image)
+        image = transforms.Resize(self.output_shape[-2:])(image)
+        image = transforms.ToTensor()(image)
+        return image.type(ts.dtype).to(ts)

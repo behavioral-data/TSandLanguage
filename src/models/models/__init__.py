@@ -5,4 +5,4 @@ from src.models.models.vit import ViTForClassification
 from torch import nn
 from src.models.models.inceptiontime import InceptionTime
 from src.models.models.transcription import HFTranscriptionModel
-from src.models.models.multimodal_llm import LLaVA
+from src.models.models.llava import LLaVA
