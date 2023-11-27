@@ -41,17 +41,22 @@ sync_bdata:
 
 ## Set up python interpreter environment
 create_environment:
-	ifeq (True,$(HAS_MAMBA))
+ifeq (True,$(HAS_MAMBA))
 	@echo ">>> Detected mamba, creating conda environment."
 	conda env create --name $(PROJECT_NAME)
 	conda activate $(PROJECT_NAME)
 	mamba env update --file environment.yml 
-	else
-	conda env create -f environment.yml
-	endif
 	pip install -e .
 	echo PROJECT_NAME=$(PROJECT_NAME)>> .env
 	@echo ">>> New conda env created. Activate with:\n conda activate $(PROJECT_NAME)"
+else
+	@echo ">>> Detected conda, creating conda environment."
+	conda env create -f environment.yml
+	pip install -e .
+	echo PROJECT_NAME=$(PROJECT_NAME)>> .env
+	@echo ">>> New conda env created. Activate with:\n conda activate $(PROJECT_NAME)"
+endif
+
 
 
 ## Test python environment is setup correctly
