@@ -19,6 +19,7 @@ class MultimodalDataset(ListDataset):
                  context_columns=["context"],
                  ts_column="ts",
                  label_column="label",
+                 context_prefix="",
                  **kwargs):
         
         self.tokenizer = tokenizer
@@ -26,12 +27,13 @@ class MultimodalDataset(ListDataset):
         self.context_columns = context_columns
         self.ts_column = ts_column
         self.label_column = label_column
+        self.context_prefix = context_prefix
 
         super().__init__(data)
 
     def __getitem__(self, index) -> Dict:
         data = super().__getitem__(index)
-        context = " ".join([str(data[col]) for col in self.context_columns])
+        context = self.context_prefix + " ".join([str(data[col]) for col in self.context_columns])
         
         return {
             "context" : context,
@@ -114,7 +116,8 @@ class MultimodalTask(Task, MultimodalMixin):
         dataset = MultimodalDataset(data, tokenizer = self.tokenizer,
                                     context_columns=self.context_columns,
                                     ts_column=self.ts_column,
-                                    label_column=self.label_column)
+                                    label_column=self.label_column,
+                                    context_prefix=self.context_prefix)
         
         if self.tokenizer:
             data_collator = TokenizePadAndCollate(tokenizer=self.tokenizer,

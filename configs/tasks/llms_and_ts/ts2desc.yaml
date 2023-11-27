@@ -1,3 +1,4 @@
 class_path: src.models.tasks.MultimodalTask
 init_args:
   cache_path: data/processed/ts2desc/
+  context_prefix: Summarize the following time series, taking extra care to describe the behavior of the signal
