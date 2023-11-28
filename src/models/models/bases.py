@@ -298,8 +298,7 @@ class MultimodalModel(SensingModel,ModelTypeMixin):
         self.is_classifier = True
 
         # Consider moving this into a superclass at some point
-    def _encode_ts(self, ts: List[np.array]) -> torch.Tensor:
-        ts = [torch.tensor(x).to(self.device).type(self.dtype) for x in ts]
-        ts_enc = [self.ts_encoder(x) for x in ts]
-        return torch.stack(ts_enc)
+    def _prepare_ts(self, ts: List[np.array]) -> torch.Tensor:
+        ts = [torch.tensor(x).to(self.device).type(self.dtype).unsqueeze(0) for x in ts]
+        return ts
 

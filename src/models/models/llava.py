@@ -3,6 +3,7 @@ from typing import Dict, List, Sequence, Tuple
 import os
 import shutil
 import warnings
+from matplotlib import pyplot as plt
 
 import numpy as np
 import torch
@@ -14,7 +15,7 @@ from llava.constants import (DEFAULT_IM_END_TOKEN, DEFAULT_IM_START_TOKEN,
                              IGNORE_INDEX)
 from llava.mm_utils import tokenizer_image_token
 from llava.model.multimodal_projector.builder import build_vision_projector
-from llava.model.multimodal_encoder.builder import build_vision_tower
+from llava.model.multimodal_encoder.builder import build_vision_tower 
 from llava.model import *
 from PIL import Image
 from torch import nn
@@ -486,14 +487,13 @@ def load_pretrained_llava(model_path, model_base, model_name, load_8bit=False, l
         if not vision_tower.is_loaded:
             vision_tower.load_model()
         vision_tower.to(device=device, dtype=torch.float16)
-        image_processor = vision_tower.image_processor
 
     if hasattr(model.config, "max_sequence_length"):
         context_len = model.config.max_sequence_length
     else:
         context_len = 2048
 
-    return tokenizer, model, image_processor, context_len
+    return tokenizer, model, context_len
 
 
 class LLaVATS(LlavaLlamaForCausalLM):
@@ -509,10 +509,19 @@ class LLaVATS(LlavaLlamaForCausalLM):
             mm_vision_tower = None
         
         super().__init__(config) 
-        
+            
         if mm_vision_tower:
             config.mm_vision_tower = mm_vision_tower
-            self.get_model().vision_tower = build_vision_tower(config, delay_load=True)
+            # I am unclear as to why `delay_load` is necessary, but the CLIP weights 
+            # aren't initialized correctly if it's omitted
+            base_vision_tower = build_vision_tower(config, delay_load=True)
+            
+            mpl_encoder = MatplotlibEncoder(dim=base_vision_tower.config.image_size)
+            vision_tower = nn.Sequential(mpl_encoder, base_vision_tower)
+            vision_tower.is_loaded = False
+            vision_tower.load_model = base_vision_tower.load_model
+
+            self.get_model().vision_tower = vision_tower
             self.get_model().mm_projector = build_vision_projector(config)
 
 # This is the main entry point for the model
@@ -527,11 +536,9 @@ class LLaVA(MultimodalModel):
         if model_name is None:
             model_name = hf_name_or_path.split("/")[-1]
         
-        self.image_size = (224,224)
-        self.tokenizer, self.model, self.image_processor, self.context_len \
+        self.tokenizer, self.model, self.context_len \
             = load_pretrained_llava(hf_name_or_path, model_base, model_name)
         
-        self.ts_encoder = MatplotlibEncoder(dim=self.image_size[0])
         self.model.to(dtype=torch.bfloat16)
         
         self.model.requires_grad_(False)
@@ -543,10 +550,9 @@ class LLaVA(MultimodalModel):
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = 0
     
-    def prepare_inputs(self, context: List[str], label: List[str], ts: List[np.array],
-                        pad = True, max_len=512,):
+    def prepare_inputs(self, context: List[str], label: List[str], ts: List[np.array]):
         
-        ts_emb = self._encode_ts(ts).to(self.model.dtype)
+        ts = self._prepare_ts(ts)
         context = [f"{DEFAULT_IMAGE_TOKEN}\n" + x  for x in context]
 
         sources = []
@@ -558,7 +564,7 @@ class LLaVA(MultimodalModel):
 
         data_dicts = llava_preprocess(sources,self.tokenizer,has_image=True)
         
-        return data_dicts["input_ids"].to(self.device), data_dicts["labels"].to(self.device), ts_emb.to(self.device)
+        return data_dicts["input_ids"].to(self.device), data_dicts["labels"].to(self.device), ts
     
     def forward(self,context: List[str], label: List[str], ts: List[np.array], **kwargs):
         input_ids, label_ids , ts_emb = self.prepare_inputs(context, label, ts)
@@ -609,23 +615,24 @@ class MatplotlibEncoder(nn.Module):
         self.pad_val = pad_val
         self.use_ticks = use_ticks
     
-    def forward(self, ts: torch.Tensor) -> torch.Tensor:
-
-        import matplotlib.pyplot as plt
-        fig, ax = plt.subplots()
-        ax.plot(ts.cpu().numpy())
-        if not self.use_ticks:
-            ax.set_xticks([])
-            ax.set_yticks([])
-        fig.canvas.draw()
-        fig.tight_layout(pad=0)
-        width, height = fig.get_size_inches() * fig.get_dpi()
-        width, height = int(width), int(height)
-        image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8').reshape(height, width, 3)
-        plt.close(fig)
-        
-        # Resize the image
-        image = Image.fromarray(image)
-        image = transforms.Resize(self.output_shape[-2:])(image)
-        image = transforms.ToTensor()(image)
-        return image.type(ts.dtype).to(ts)
+    def forward(self, ts: List[torch.Tensor]) -> torch.Tensor:
+        to_return = []
+        for t in ts:
+            fig, ax = plt.subplots()
+            ax.plot(t.cpu().numpy())
+            if not self.use_ticks:
+                ax.set_xticks([])
+                ax.set_yticks([])
+            fig.canvas.draw()
+            fig.tight_layout(pad=0)
+            width, height = fig.get_size_inches() * fig.get_dpi()
+            width, height = int(width), int(height)
+            image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8').reshape(height, width, 3)
+            plt.close(fig)
+            
+            # Resize the image
+            image = Image.fromarray(image)
+            image = transforms.Resize(self.output_shape[-2:])(image)
+            image = transforms.ToTensor()(image)
+            to_return.append(image.type(t.dtype).to(t))
+        return torch.stack(to_return, dim=0)
