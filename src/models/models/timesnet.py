@@ -117,11 +117,12 @@ class TimesNetEncoder(nn.Module):
         self.model = nn.ModuleList([TimesBlock(configs) for _ in range(configs.num_layers)])
         self.enc_embedding = DataEmbedding(configs.enc_in, configs.d_model)
         self.layer_norm = nn.LayerNorm(configs.d_model)
-        self.projection = nn.Linear(configs.d_model*configs.seq_len, configs.d_model)
+        # self.projection = nn.Linear(configs.d_model*configs.seq_len, configs.d_model)
         self.act = F.gelu
         self.dropout = nn.Dropout(configs.dropout)
     
     def forward(self, ts: torch.Tensor) -> torch.Tensor:
+        # --- the following code is straight from the TimesNet implementation for classification ---
         # embedding
         enc_out = self.enc_embedding(ts)  # [B,T,C]
         enc_out = self.predict_linear(enc_out.permute(0, 2, 1)).permute(0, 2, 1)
@@ -133,7 +134,8 @@ class TimesNetEncoder(nn.Module):
         output = self.act(enc_out)
         output = self.dropout(output) # Shape: (batch_size, seq_length, d_model)
         
+        # --- dropped the following lines which create one embedding (we can do this if we want one embedding per time series!!) ---
         # output shape: (batch_size, seq_length * d_model)
-        output = output.reshape(output.shape[0], -1)
-        output = self.projection(output)  # (batch_size, d_model)
+        # output = output.reshape(output.shape[0], -1)
+        # output = self.projection(output)  # (batch_size, d_model)
         return output
