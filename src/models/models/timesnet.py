@@ -102,6 +102,7 @@ class TimesNetEncoder(nn.Module):
     Implementation: https://github.com/thuml/Time-Series-Library/
     """
     def __init__(self, dim : int = 1, *args, **kwargs) -> None:
+        super(TimesNetEncoder, self).__init__()
         # --- these are the default hyperparameters from Time-Series-Library ---
         configs = {
             "pred_len": 0,
@@ -114,10 +115,11 @@ class TimesNetEncoder(nn.Module):
             "dropout": 0.1,
         }
         configs = SimpleNamespace(**configs) # make configs accessible by dots per TimesNet requirements (e.g., configs.num_layers)
+        self.num_layers = configs.num_layers
         self.model = nn.ModuleList([TimesBlock(configs) for _ in range(configs.num_layers)])
         self.enc_embedding = DataEmbedding(configs.enc_in, configs.d_model)
         self.layer_norm = nn.LayerNorm(configs.d_model)
-        # self.projection = nn.Linear(configs.d_model*configs.seq_len, configs.d_model)
+        # self.projection = nn.Linear(configs.d_model*configs.seq_len, configs.num_out_tokens) # Only need if we want to project to another # tokens
         self.act = F.gelu
         self.dropout = nn.Dropout(configs.dropout)
     
@@ -125,17 +127,10 @@ class TimesNetEncoder(nn.Module):
         # --- the following code is straight from the TimesNet implementation for classification ---
         # embedding
         enc_out = self.enc_embedding(ts)  # [B,T,C]
-        enc_out = self.predict_linear(enc_out.permute(0, 2, 1)).permute(0, 2, 1)
-        for i in range(self.layer):
+        for i in range(self.num_layers):
             enc_out = self.layer_norm(self.model[i](enc_out))
-            
-        # Output based on a TimesNet Classifier
+
         # the output transformer encoder/decoder embeddings don't include non-linearity
         output = self.act(enc_out)
         output = self.dropout(output) # Shape: (batch_size, seq_length, d_model)
-        
-        # --- dropped the following lines which create one embedding (we can do this if we want one embedding per time series!!) ---
-        # output shape: (batch_size, seq_length * d_model)
-        # output = output.reshape(output.shape[0], -1)
-        # output = self.projection(output)  # (batch_size, d_model)
         return output
