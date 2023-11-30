@@ -23,6 +23,7 @@ from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
                           BitsAndBytesConfig)
 
 from src.models.models.bases import MultimodalModel
+from src.models.models.timesnet import TimesNetEncoder
 
 
 def _tokenize_fn(strings: Sequence[str],
@@ -384,8 +385,8 @@ def llava_preprocess(
     return dict(input_ids=input_ids, labels=targets)
 
 
-def load_pretrained_llava(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda"):
-    kwargs = {"device_map": device_map}
+def load_pretrained_llava(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", **kwargs):
+    kwargs["device_map"]=device_map
     
     if 'mpt' in model_name.lower():
         raise NotImplementedError("We only support LLaMA variants of LLaVA for now.")
@@ -499,7 +500,7 @@ def load_pretrained_llava(model_path, model_base, model_name, load_8bit=False, l
 class LLaVATS(LlavaLlamaForCausalLM):
     ''' Subclass the original LLaVA to make it work with time series encoders.
     '''
-    def __init__(self, config):
+    def __init__(self, config, encoder_name="matplotlib"):
         # We move the intializiation of the vision_tower 
         # to here so that we can control it.
         if hasattr(config, "mm_vision_tower"):
@@ -512,17 +513,28 @@ class LLaVATS(LlavaLlamaForCausalLM):
             
         if mm_vision_tower:
             config.mm_vision_tower = mm_vision_tower
-            # I am unclear as to why `delay_load` is necessary, but the CLIP weights 
-            # aren't initialized correctly if it's omitted
-            base_vision_tower = build_vision_tower(config, delay_load=True)
             
-            mpl_encoder = MatplotlibEncoder(dim=base_vision_tower.config.image_size)
-            vision_tower = nn.Sequential(mpl_encoder, base_vision_tower)
-            vision_tower.is_loaded = False
-            vision_tower.load_model = base_vision_tower.load_model
-
+            # I dont understand why `delay_load` is necessary, but the weights
+            # are not properly initalized if we don't do it this way. I believe it has
+            # something to do with the meta intialization 
+            
+            if encoder_name == "matplotlib":
+                base_vision_tower = build_vision_tower(config, delay_load=True)
+                mpl_encoder = MatplotlibEncoder(dim=base_vision_tower.config.image_size)
+                vision_tower = nn.Sequential(mpl_encoder, base_vision_tower)
+                vision_tower.is_loaded = False
+                vision_tower.load_model = base_vision_tower.load_model
+            
+            elif encoder_name == "timesnet":
+                vision_tower = TimesNetEncoder(device="cuda")
+                vision_tower.is_loaded = False
+            
+            else:
+                raise NotImplementedError(f"Unknown encoder name {encoder_name}")
+            
             self.get_model().vision_tower = vision_tower
             self.get_model().mm_projector = build_vision_projector(config)
+
 
 # This is the main entry point for the model
 class LLaVA(MultimodalModel):
@@ -530,6 +542,7 @@ class LLaVA(MultimodalModel):
     def __init__(self, hf_name_or_path : str,
                        model_base : str = None,
                        model_name : str = None,
+                       encoder_name : str = "matplotlib",
                     **kwargs)  -> None:
             
         MultimodalModel.__init__(self, **kwargs)
@@ -537,7 +550,8 @@ class LLaVA(MultimodalModel):
             model_name = hf_name_or_path.split("/")[-1]
         
         self.tokenizer, self.model, self.context_len \
-            = load_pretrained_llava(hf_name_or_path, model_base, model_name)
+            = load_pretrained_llava(hf_name_or_path, model_base, model_name,
+                                    encoder_name=encoder_name)
         
         self.model.to(dtype=torch.bfloat16)
         
