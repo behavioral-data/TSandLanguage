@@ -23,7 +23,7 @@ from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
                           BitsAndBytesConfig)
 
 from src.models.models.bases import MultimodalModel
-from timesnet import TimesNetEncoder
+from src.models.models.timesnet import TimesNetEncoder
 
 
 def _tokenize_fn(strings: Sequence[str],
@@ -517,21 +517,21 @@ class LLaVATS(LlavaLlamaForCausalLM):
             config.mm_vision_tower = mm_vision_tower
             # I am unclear as to why `delay_load` is necessary, but the CLIP weights 
             # aren't initialized correctly if it's omitted
-            base_vision_tower = build_vision_tower(config, delay_load=True)
             
             if encoder == "matplotlib":
+                base_vision_tower = build_vision_tower(config, delay_load=True)
                 mpl_encoder = MatplotlibEncoder(dim=base_vision_tower.config.image_size)
                 vision_tower = nn.Sequential(mpl_encoder, base_vision_tower)
                 vision_tower.is_loaded = False
                 vision_tower.load_model = base_vision_tower.load_model
             elif encoder == "timesnet":
-                vision_tower = TimesNetEncoder()
-            else:
-                print("no proper encoder")
+
+                vision_tower = TimesNetEncoder(device="cuda")#.to(self.device, self.dtype)
+                vision_tower.is_loaded = False
 
             self.get_model().vision_tower = vision_tower
             self.get_model().mm_projector = build_vision_projector(config)
-            
+
 
 # This is the main entry point for the model
 class LLaVA(MultimodalModel):
