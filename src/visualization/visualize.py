@@ -1,23 +1,20 @@
-import json
-import os
+import math
+import operator
+from contextlib import contextmanager
 
-from matplotlib import pyplot as plt
+import matplotlib
 import matplotlib.ticker as mtick
-
-import wandb
+import networkx
+import numpy as np
 import pandas as pd
 import seaborn as sns
-
-import numpy as np
-import matplotlib 
-
-import operator
-import math
-from scipy.stats import wilcoxon
-from scipy.stats import friedmanchisquare
-import networkx
+from matplotlib import font_manager
+from matplotlib import pyplot as plt
+from scipy.stats import friedmanchisquare, wilcoxon
 
 from src.data.utils import download_wandb_table
+
+PAPER_STYLESHEET =  "src/visualization/stylesheets/paper.mplstyle"
 
 def plot_roc_curve(run_id,table_name="roc_table",plt_kwargs={},
                  entity="mikeamerrill", project="flu"):
@@ -47,16 +44,22 @@ def bars_with_labels_and_errors(x,y,ci,palette = "GnBu_d", ax = None,
         
         bar_end_y = patch.get_height()
         bar_middle_x = patch.get_x() + patch.get_width() /2
-        print(data)
-        print("i",i)
-        accuracy = data.iloc[i][x]
-        # plt.gca().text(bar_end_x + 0.05, bar_middle_y, \
-        #         str(round((accuracy)*100, 2))+'%',
-        #         verticalalignment='center')
 
         error_size = data.iloc[i][ci]
         plt.gca().errorbar(xerr = error_size, y = bar_end_y, x = bar_middle_x, c= "black")
 
+@contextmanager
+def paper_mpl_env():
+    with plt.style.context(PAPER_STYLESHEET) as c:
+        try:
+            # Make sure that we have the correct fonts loaded
+            font_dirs = ['src/visualization/resources/computer-modern']
+            font_files = font_manager.findSystemFonts(fontpaths=font_dirs)
+            for font_file in font_files:
+                font_manager.fontManager.addfont(font_file)
+            yield [c]
+        finally:
+            ...
 
 def latexify(fig_width=None, fig_height=None, columns=1):
     """Set up matplotlib's RC params for LaTeX plotting.
@@ -104,26 +107,6 @@ def latexify(fig_width=None, fig_height=None, columns=1):
     matplotlib.rcParams.update(params)
 
 
-def format_axes(ax):
-
-    for spine in ['top', 'right']:
-        ax.spines[spine].set_visible(False)
-
-    for spine in ['left', 'bottom']:
-        ax.spines[spine].set_color(SPINE_COLOR)
-        ax.spines[spine].set_linewidth(0.5)
-
-    ax.xaxis.set_ticks_position('bottom')
-    ax.yaxis.set_ticks_position('left')
-
-    for axis in [ax.xaxis, ax.yaxis]:
-        axis.set_tick_params(direction='out', color=SPINE_COLOR)
-
-    return ax
-
-
-
-   
 # Author: Hassan Ismail Fawaz <hassan.ismail-fawaz@uha.fr>
 #         Germain Forestier <germain.forestier@uha.fr>
 #         Jonathan Weber <jonathan.weber@uha.fr>
