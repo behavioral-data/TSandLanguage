@@ -22,6 +22,7 @@ dependencies:
   - tokenizers>=0.13.3
   - pip:
     - einops
+    - seaborn
     - git+https://github.com/haotian-liu/LLaVA@a0bdc71
     - wandb 
     - openai
