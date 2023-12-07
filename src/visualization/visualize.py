@@ -61,6 +61,44 @@ def paper_mpl_env():
         finally:
             ...
 
+
+import re
+
+LOWER_WORDS={'this', 'upon', 'altogether', 'whereunto', 'across', 'between', 
+             'and', 'if', 'as', 'over', 'above', 'afore', 'inside', 'like', 
+             'besides', 'on', 'atop', 'about', 'toward', 'by', 'these',
+             'for', 'into', 'beforehand', 'unlike', 'until', 'in', 'aft',
+              'onto', 'to', 'vs', 'amid', 'towards', 'afterwards', 
+              'notwithstanding', 'unto', 'while', 'next', 'including', 'thru', 
+              'a', 'down', 'after', 'with', 'afterward', 'or', 'those', 'but', 
+              'whereas', 'versus', 'without', 'off', 'among', 'because', 'some',
+              'against', 'before', 'around', 'of', 'under', 'that', 'except', 
+              'at', 'beneath', 'out', 'amongst', 'the', 'from', 'per', 
+              'mid', 'behind', 'along', 'outside', 'beyond', 'up', 'past', 
+              'through', 'beside', 'below', 'during'}
+
+def title_capitalize(match, use_lowers=True):
+    text=match.group()
+    lower=text.lower()
+    if lower in LOWER_WORDS and use_lowers==True:
+        return lower
+    else:
+        i=0
+        new_text=""
+        capitalized=False
+        while i<len(text):
+            if text[i] not in {"’", "'"} and capitalized==False:
+                new_text+=text[i].upper()
+                capitalized=True
+            else:
+                new_text+=text[i].lower()
+            i+=1
+        return new_text
+
+def title(the_string):
+    first=re.sub(r"[\w'’‑-]+", title_capitalize, the_string)
+    return re.sub(r"(^[\w'’‑-]+)|([\w'’‑-]+$)", lambda match : title_capitalize(match, use_lowers=False), first)
+
 def latexify(fig_width=None, fig_height=None, columns=1):
     """Set up matplotlib's RC params for LaTeX plotting.
     Call this before plotting a figure.
