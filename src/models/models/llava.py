@@ -553,11 +553,15 @@ class LLaVA(MultimodalModel):
             = load_pretrained_llava(hf_name_or_path, model_base, model_name,
                                     encoder_name=encoder_name)
         
-        self.model.to(dtype=torch.bfloat16)
+        self.model.to(dtype=torch.bfloat16, device=self.device)
         
-        self.model.requires_grad_(False)
+        self.model.get_model().requires_grad_(False)
+
         for p in self.model.get_model().mm_projector.parameters():
              p.requires_grad = True
+        if encoder_name == "timesnet":
+            for p in self.model.get_model().vision_tower.parameters():
+                p.requires_grad = True
         
         self.model.enable_input_require_grads()
         
