@@ -110,12 +110,12 @@ class TimesNetEncoder(nn.Module):
         configs = {
             "pred_len": 0,
             "enc_in": dim, # Input dimension <- should be 1 for univariate!
-            "top_k": 1,
+            "top_k": 3,
             "d_ff": 32,
             "d_model": 1024, # Embedding dimension
             "num_kernels": 4,
-            "num_layers": 1, # Number of TimesNet blocks in encoder
-            "dropout": 0.1,
+            "num_layers": 8, # Number of TimesNet blocks in encoder
+            "dropout": 0.0,
         }
         configs = SimpleNamespace(**configs) # make configs accessible by dots per TimesNet requirements (e.g., configs.num_layers)
         self.num_layers = configs.num_layers
@@ -145,3 +145,5 @@ class TimesNetEncoder(nn.Module):
             if hasattr(layer, 'reset_parameters'):
                 layer.reset_parameters()
             
+            for param in layer.parameters():
+                param.requires_grad = True
