@@ -526,7 +526,7 @@ class LLaVATS(LlavaLlamaForCausalLM):
                 vision_tower.load_model = base_vision_tower.load_model
             
             elif encoder_name == "timesnet":
-                vision_tower = TimesNetEncoder(device="cuda")
+                vision_tower = TimesNetEncoder(device=self.device)
                 vision_tower.is_loaded = False
             
             else:
