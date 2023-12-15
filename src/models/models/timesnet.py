@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.fft
 from src.models.models.layers.embed import DataEmbedding
+import numpy as np
 
 
 class Inception_Block_V1(nn.Module):
@@ -42,6 +43,8 @@ def FFT_for_Period(x, k=2):
     # find period by amplitudes
     frequency_list = abs(xf).mean(0).mean(-1)
     frequency_list[0] = 0
+    if k > frequency_list.shape[0]:
+        k = frequency_list.shape[0]
     _, top_list = torch.topk(frequency_list, k)
     top_list = top_list.detach().cpu().numpy()
     period = x.shape[1] // top_list
@@ -71,7 +74,12 @@ class TimesBlock(nn.Module):
         period_list, period_weight = FFT_for_Period(x, self.k)
 
         res = []
-        for i in range(self.k):
+        i = 0
+        while i < self.k:
+
+            if i > len(period_list) - 1:
+                break
+
             period = period_list[i]
             # padding
             if (self.seq_len + self.pred_len) % period != 0:
@@ -89,12 +97,13 @@ class TimesBlock(nn.Module):
             # reshape back
             out = out.permute(0, 2, 3, 1).reshape(B, -1, N)
             res.append(out[:, :(self.seq_len + self.pred_len), :])
+            i += 1
         res = torch.stack(res, dim=-1)
         # adaptive aggregation
         period_weight = F.softmax(period_weight, dim=1)
         period_weight = period_weight.unsqueeze(
             1).unsqueeze(1).repeat(1, T, N, 1)
-        res = torch.sum(res * period_weight, -1)
+        res = torch.sum(res * period_weight[...,:i], -1) # Go up to i, which is the number of periods we used
         # residual connection
         res = res + x
         return res
