@@ -212,7 +212,21 @@ class SensingModel(pl.LightningModule):
         optimizer = self.optimizer(self.parameters(), lr=self.learning_rate)
         scheduler = self.scheduler(optimizer)
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
+    
+    def optimizer_step( self,
+                        epoch: int,
+                        batch_idx: int,
+                        optimizer,
+                        optimizer_closure):
+        
+        if self.trainer.global_step < self.warmup_steps:
+            lr_scale = min(1., float(self.trainer.global_step + 1) / (self.warmup_steps + 1))
+            for pg in optimizer.param_groups:
+                default_lr = optimizer.defaults["lr"]
+                pg['lr'] = lr_scale * default_lr    
 
+        optimizer.step(closure=optimizer_closure)
+        optimizer.zero_grad()
     
     def on_load_checkpoint(self, checkpoint: dict) -> None:
         state_dict = checkpoint["state_dict"]
