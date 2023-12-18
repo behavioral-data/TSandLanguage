@@ -1,0 +1,7 @@
+class_path: src.models.tasks.MultimodalTask
+init_args:
+  cache_path: data/processed/QA/
+  context_prefix: "Answer the following question about the time series:"
+  context_columns: ["description_tiny", "metadata", "question"]
+  index_from_options: True
+
