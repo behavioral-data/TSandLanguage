@@ -20,9 +20,11 @@ class MultimodalDataset(ListDataset):
                  ts_column="ts",
                  label_column="label",
                  context_prefix="",
+                 index_from_options=False,
                  **kwargs):
         
         self.tokenizer = tokenizer
+        self.index_from_options = index_from_options
         
         self.context_columns = context_columns
         self.ts_column = ts_column
@@ -34,11 +36,16 @@ class MultimodalDataset(ListDataset):
     def __getitem__(self, index) -> Dict:
         data = super().__getitem__(index)
         context = self.context_prefix + " ".join([str(data[col]) for col in self.context_columns])
-        
+        if self.index_from_options:
+            options = data["options"]
+            label = options[data["answer_index"]]
+        else:
+            label = data[self.label_column]
+            
         return {
             "context" : context,
             "ts" : np.array(data[self.ts_column]),
-            "label" : data[self.label_column],
+            "label" : label,
         }
     
 class MultimodalMCQDataset(ListDataset):
@@ -97,6 +104,7 @@ class MultimodalTask(Task, MultimodalMixin):
                        cache_path:str = "data/processed/synthetic_descriptions",
                        batch_size:int = 16,
                        context_prefix:str = "",
+                       index_from_options:bool = False,
                        **kwargs):
         
         self.cache_path = cache_path
@@ -104,6 +112,7 @@ class MultimodalTask(Task, MultimodalMixin):
         self.context_columns = context_columns
         self.label_column = label_column
         self.context_prefix = context_prefix
+        self.index_from_options = index_from_options
 
         self.tokenizer = None #TODO Add if ever needed
         self.batch_size = batch_size
@@ -117,7 +126,8 @@ class MultimodalTask(Task, MultimodalMixin):
                                     context_columns=self.context_columns,
                                     ts_column=self.ts_column,
                                     label_column=self.label_column,
-                                    context_prefix=self.context_prefix)
+                                    context_prefix=self.context_prefix,
+                                    index_from_options=self.index_from_options)
         
         if self.tokenizer:
             data_collator = TokenizePadAndCollate(tokenizer=self.tokenizer,
