@@ -43,7 +43,7 @@ sync_bdata:
 create_environment:
 ifeq (True,$(HAS_MAMBA))
 	@echo ">>> Detected mamba, creating conda environment."
-	conda env create --name $(PROJECT_NAME)
+	conda create --name $(PROJECT_NAME)
 	conda activate $(PROJECT_NAME)
 	mamba env update --file environment.yml 
 	pip install -e .
