@@ -131,7 +131,7 @@ class CLI(LightningCLI):
                                     filename='{epoch}',
                                     save_last=True,
                                     save_top_k=1,
-                                    save_on_train_epoch_end = False,
+                                    save_on_train_epoch_end = True,
                                     monitor=checkpoint_metric,
                                     every_n_epochs=1,
                                     mode=mode)
@@ -142,6 +142,7 @@ class CLI(LightningCLI):
             import wandb
             lr_monitor = LearningRateMonitor(logging_interval='step')
             extra_callbacks.append(lr_monitor)
+
             # kwargs["save_config_callback"] = WandBSaveConfigCallback
 
             logger_id = self.model.wandb_id if hasattr(self.model, "id") else None
@@ -155,7 +156,7 @@ class CLI(LightningCLI):
                                 entity=CONFIG["WANDB_ENTITY"],
                                 name=run_name,
                                 config=dict(self.config.as_dict()[self.config.subcommand]),
-                                notes=self.config["fit"]["notes"],
+                                notes=self.config[self.config.subcommand]["notes"],
                                 log_model=False, #saves checkpoints to wandb as artifacts, might add overhead 
                                 reinit=True,
                                 save_dir=save_dir,
@@ -255,7 +256,6 @@ if __name__ == "__main__":
         pass
 
     cli = CLI(trainer_defaults=trainer_defaults,
-            seed_everything_default=999,
             parser_kwargs={"parser_mode": "omegaconf"},
-            save_config_callback=None)
+            save_config_callback=WandBSaveConfigCallback)
 
