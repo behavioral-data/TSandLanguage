@@ -80,8 +80,16 @@ class MultimodalMCQDataset(ListDataset):
         
         if self.shuffle_labels:
             shuffle(options)
+        
+        if "answer_index" in data:
+            label_index = data["answer_index"]
+            if self.shuffle_labels:
+                print("WARNING: You are relying on a precomputed answer index but also shuffling the labels. This is probably not what you want.")
 
-        label_index = options.index(data[self.label_column])
+        else:
+            label_index = options.index(data[self.label_column])
+        
+       
         if self.format_abc_mcq:
             full_options = [f"{chr(ord('A') + i)}) {x}" for i, x in enumerate(options)]
             options = [f"{chr(ord('A') + i)}" for i, x in enumerate(options)]
@@ -145,7 +153,7 @@ class MultimodalTask(Task, MultimodalMixin):
         return self.get_dataloader("train")
     
     def test_dataloader(self) -> DataLoader:
-        return None
+        return self.get_dataloader("test")
     
     def load(self, partition):
         path = os.path.join(self.cache_path, partition + ".json")
