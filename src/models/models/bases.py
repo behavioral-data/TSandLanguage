@@ -11,7 +11,8 @@ from lightning.pytorch.cli import OptimizerCallable, LRSchedulerCallable
 
 from torch import Tensor
 
-from src.models.eval import (TorchMetricClassification, TorchMetricRegression, TorchMetricMultimodal)
+from src.models.eval import (TorchMetricClassification, TorchMetricRegression, TorchMetricMultimodal, compute_log_probs)
+from src.models.tasks import MultimodalMCQTask
 
 from src.utils import (get_logger,upload_pandas_df_to_wandb)
 
@@ -31,7 +32,7 @@ class SensingModel(pl.LightningModule):
                        num_classes: Optional[int] = None,
                        compute_metrics: bool = True,
                        optimizer: OptimizerCallable = torch.optim.Adam,
-                       scheduler: LRSchedulerCallable = torch.optim.lr_scheduler.ConstantLR,
+                       lr_scheduler: LRSchedulerCallable = torch.optim.lr_scheduler.ConstantLR,
                        input_shape : Optional[Tuple[int,...]] = None,
                        reset_weights_before_fit=False):
         
@@ -65,7 +66,7 @@ class SensingModel(pl.LightningModule):
         self.batch_size = batch_size
         
         self.optimizer=optimizer
-        self.scheduler=scheduler
+        self.scheduler=lr_scheduler
 
         self.wandb_id = None
         self.name = None
@@ -74,6 +75,9 @@ class SensingModel(pl.LightningModule):
 
         # self.save_hyperparameters()
 
+    @property
+    def is_mcq_task(self):
+        return isinstance(self.trainer.datamodule, MultimodalMCQTask)
 
     @staticmethod
     def add_model_specific_args(parser):
@@ -127,18 +131,37 @@ class SensingModel(pl.LightningModule):
             y = y.detach().cpu()
 
         # Log the loss
-        self.log(f"{loss_key}/loss", loss, on_step=True, prog_bar=True, sync_dist=True, batch_size = len(y))
+        self.log(f"{loss_key}/loss", loss, on_step=True, prog_bar=True, sync_dist=False, batch_size = len(y))
 
         if preds is not None:
             # Update metrics
+            preds = preds.detach()
             getattr(self, f"{loss_key}_metrics").update(preds, y, **batch)
 
-        if isinstance(self, MultimodalModel) and loss_key in ["test","val"]\
-            and not "options" in batch:
+        if loss_key in ["test","val"]:
+            if isinstance(self, MultimodalModel):
+                if self.is_mcq_task:
+                    options =  batch["options"]
+                    label_index = batch["label_index"]
+                    log_probs = torch.stack([compute_log_probs(l, o) for l,o in zip(preds,options)])
 
-            results = self._generate_after_step(**batch)
-            getattr(self, f"{loss_key}_results").extend(results)
-        
+                    # Unfold the batch back into records
+                    preds = preds.flatten()
+                    y = batch["label"]
+                    
+                    for i in range(len(log_probs)):
+                        record = {
+                            "log_prob": log_probs[i].cpu().numpy(),
+                            "label_index": label_index[i],
+                            "label": batch["label"][i]
+                        }
+
+                        getattr(self, f"{loss_key}_results").append(record)
+
+                else:
+                    results = self._generate_after_step(**batch)
+                    getattr(self, f"{loss_key}_results").extend(results)
+                            
         return {"loss": loss, "labels": y}
 
     def training_step(self, batch, batch_idx) -> Union[int, Dict[str, Union[Tensor, Dict[str, Tensor]]]]:
@@ -190,7 +213,7 @@ class SensingModel(pl.LightningModule):
         return {"loss":loss, "preds": logits, "labels":y,
                 "participant_id":batch["participant_id"],
                 "end_date":batch["end_date_str"] }
-
+    
 
     def on_validation_epoch_end(self):
 
