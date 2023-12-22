@@ -1,10 +1,15 @@
 import logging
 import os
 import warnings
+
 warnings.filterwarnings("ignore")
+import sys
 from pprint import pprint
 from typing import Any, Optional
 
+import pandas as pd
+import torch
+from dotenv import dotenv_values
 from lightning.fabric.utilities.cloud_io import get_filesystem
 from lightning.pytorch import LightningModule, Trainer, seed_everything
 from lightning.pytorch.callbacks import (EarlyStopping, LearningRateMonitor,
@@ -12,14 +17,9 @@ from lightning.pytorch.callbacks import (EarlyStopping, LearningRateMonitor,
 from lightning.pytorch.cli import LightningCLI, SaveConfigCallback
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.trainer.states import TrainerFn
-import pandas as pd
-from dotenv import dotenv_values
-import torch
 from torch import autograd
 
-import wandb
-
-from src.utils import get_logger, upload_pandas_df_to_wandb
+from src.utils import get_logger
 
 torch.set_float32_matmul_precision('medium')
 
@@ -66,7 +66,7 @@ class WandBSaveConfigCallback(SaveConfigCallback):
             config_path = os.path.join(log_dir, self.config_filename)
             fs.makedirs(log_dir, exist_ok=True)
             self.parser.save(
-                self.config, config_path, skip_none=False, overwrite=self.overwrite, multifile=self.multifile
+                self.config, config_path, skip_none=False, overwrite=True, multifile=self.multifile
             )
         else:
             super().setup(trainer,pl_module,stage=stage)
