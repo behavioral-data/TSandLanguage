@@ -3,20 +3,24 @@ from typing import Dict, List, Sequence, Tuple
 import os
 import shutil
 import warnings
+import math
 from matplotlib import pyplot as plt
 
 import numpy as np
 import torch
 import torchvision.transforms as transforms
 import transformers
+import torchaudio
 from llava import conversation as conversation_lib
 from llava.constants import (DEFAULT_IM_END_TOKEN, DEFAULT_IM_START_TOKEN,
                              DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IMAGE_TOKEN,
-                             IGNORE_INDEX)
+                             IGNORE_INDEX, IMAGE_TOKEN_INDEX,)
 from llava.mm_utils import tokenizer_image_token
 from llava.model.multimodal_projector.builder import build_vision_projector
 from llava.model.multimodal_encoder.builder import build_vision_tower 
+from llava.conversation import conv_templates
 from llava.model import *
+from einops import repeat
 from PIL import Image
 from torch import nn
 from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
@@ -385,7 +389,7 @@ def llava_preprocess(
     return dict(input_ids=input_ids, labels=targets)
 
 
-def load_pretrained_llava(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", **kwargs):
+def load_pretrained_llava(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map=None, device="cuda", **kwargs):
     kwargs["device_map"]=device_map
     
     if 'mpt' in model_name.lower():
@@ -412,7 +416,7 @@ def load_pretrained_llava(model_path, model_base, model_name, load_8bit=False, l
             lora_cfg_pretrained = AutoConfig.from_pretrained(model_path)
             tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
             print('Loading LLaVA from base model...')
-            model = LLaVATS.from_pretrained(model_base, low_cpu_mem_usage=True, config=lora_cfg_pretrained, **kwargs)
+            model = LLaVATS.from_pretrained(model_base, low_cpu_mem_usage=False, config=lora_cfg_pretrained, **kwargs)
             token_num, tokem_dim = model.lm_head.out_features, model.lm_head.in_features
             if model.lm_head.weight.shape[0] != token_num:
                 model.lm_head.weight = torch.nn.Parameter(torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
@@ -487,7 +491,7 @@ def load_pretrained_llava(model_path, model_base, model_name, load_8bit=False, l
         vision_tower = model.get_vision_tower()
         if not vision_tower.is_loaded:
             vision_tower.load_model()
-        vision_tower.to(device=device, dtype=torch.float16)
+        vision_tower.to(device=model.device)
 
     if hasattr(model.config, "max_sequence_length"):
         context_len = model.config.max_sequence_length
@@ -500,7 +504,11 @@ def load_pretrained_llava(model_path, model_base, model_name, load_8bit=False, l
 class LLaVATS(LlavaLlamaForCausalLM):
     ''' Subclass the original LLaVA to make it work with time series encoders.
     '''
-    def __init__(self, config, encoder_name="matplotlib"):
+    def __init__(self, config, encoder_name="matplotlib", clip_path=None):
+        
+        if clip_path is not None:
+            config.mm_vision_tower = clip_path
+
         # We move the intializiation of the vision_tower 
         # to here so that we can control it.
         if hasattr(config, "mm_vision_tower"):
@@ -508,7 +516,7 @@ class LLaVATS(LlavaLlamaForCausalLM):
             del config.mm_vision_tower
         else:
             mm_vision_tower = None
-        
+    
         super().__init__(config) 
             
         if mm_vision_tower:
@@ -525,6 +533,13 @@ class LLaVATS(LlavaLlamaForCausalLM):
                 vision_tower.is_loaded = False
                 vision_tower.load_model = base_vision_tower.load_model
             
+            elif encoder_name == "spectrogram":
+                base_vision_tower = build_vision_tower(config, delay_load=True)
+                spec_encoder = SpectrogramEncoder(dim=base_vision_tower.config.image_size)
+                vision_tower = nn.Sequential(spec_encoder, base_vision_tower)
+                vision_tower.is_loaded = False
+                vision_tower.load_model = base_vision_tower.load_model
+                
             elif encoder_name == "timesnet":
                 vision_tower = TimesNetEncoder(device=self.device)
                 vision_tower.is_loaded = False
@@ -543,6 +558,8 @@ class LLaVA(MultimodalModel):
                        model_base : str = None,
                        model_name : str = None,
                        encoder_name : str = "matplotlib",
+                       thaw_vision_encoder : bool = False,
+                       clip_path : str = None,
                     **kwargs)  -> None:
             
         MultimodalModel.__init__(self, **kwargs)
@@ -551,15 +568,16 @@ class LLaVA(MultimodalModel):
         
         self.tokenizer, self.model, self.context_len \
             = load_pretrained_llava(hf_name_or_path, model_base, model_name,
-                                    encoder_name=encoder_name)
+                                    encoder_name=encoder_name, clip_path=clip_path)
         
-        self.model.to(dtype=torch.bfloat16, device=self.device)
+        self.model.to(dtype=torch.bfloat16)
         
         self.model.get_model().requires_grad_(False)
 
         for p in self.model.get_model().mm_projector.parameters():
              p.requires_grad = True
-        if encoder_name == "timesnet":
+
+        if encoder_name == "timesnet" or thaw_vision_encoder:
             for p in self.model.get_model().vision_tower.parameters():
                 p.requires_grad = True
         
@@ -567,7 +585,9 @@ class LLaVA(MultimodalModel):
         
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = 0
-    
+        
+        self.save_hyperparameters()
+        
     def prepare_inputs(self, context: List[str], label: List[str], ts: List[np.array]):
         
         ts = self._prepare_ts(ts)
@@ -584,7 +604,41 @@ class LLaVA(MultimodalModel):
         
         return data_dicts["input_ids"].to(self.device), data_dicts["labels"].to(self.device), ts
     
-    def forward(self,context: List[str], label: List[str], ts: List[np.array], **kwargs):
+    def get_class_logprobs(input_ids: torch.LongTensor,
+                        attention_mask: torch.Tensor,
+                        labels_to_tokens: Dict[str, torch.Tensor],
+                        model,
+                        normalize_length: bool = False) -> torch.FloatTensor:
+        
+        overall_probs = []
+        with torch.no_grad():
+            for label, classname_tokens in labels_to_tokens.items():
+
+                # TODO(jpgard): make sure num_tokens_in_classname is correct w/multi-token labels
+                num_tokens_in_classname = classname_tokens.shape[1]
+                classname_tokens = repeat(classname_tokens, "b s -> (repeat b) s", repeat=len(input_ids))
+                _input_ids = torch.cat((input_ids, classname_tokens), dim=1)
+                _attention_mask = torch.cat([attention_mask, torch.ones_like(classname_tokens).bool()],
+                                            dim=1)
+                logits = model(_input_ids, attention_mask=_attention_mask,).logits
+                logprobs = torch.log_softmax(logits, dim=-1)
+
+                # Extract the probabilities for only the classname tokens
+                gen_probs = logprobs[
+                            :, -num_tokens_in_classname - 1: -1, :
+                            ]  # (B, num_tokens_in_classname, vocab_len)
+                gen_probs = torch.gather(gen_probs, 2, classname_tokens[:, :, None]).squeeze(-1)
+
+                # Aggregate probabilities over tokens in the classname
+                if normalize_length:
+                    class_prob = torch.mean(gen_probs, dim=1)
+                else:
+                    class_prob = torch.sum(gen_probs, dim=1)
+                overall_probs.append(class_prob)  # (B, 1)
+
+        return torch.vstack(overall_probs).T  # [B, num_classes]
+    
+    def forward(self,context: List[str], label: List[str], ts: List[np.array], compute_class_probs=None, **kwargs):
         input_ids, label_ids , ts_emb = self.prepare_inputs(context, label, ts)
         outputs = self.model(input_ids=input_ids, labels=label_ids, images = ts_emb)
         return outputs.loss, outputs.logits[..., :-1, :]
@@ -599,23 +653,74 @@ class LLaVA(MultimodalModel):
             
             batch["options"] = results
 
+    def get_log_probs_for_class(self, context: str, ts: np.array, class_name: str, **kwargs):
+        context = context + "\nReply with the correct letter only."
+        input_ids, class_ids, ts_emb = self.prepare_inputs([context], [class_name], [ts])
+        class_token_length = class_ids.shape[1]
+        logits = self.model(input_ids=input_ids, labels=class_ids, images = ts_emb).logits
+        logprobs = torch.log_softmax(logits, dim=-1)
+        # Hack for now
+        return logprobs[-1][-2][class_ids[0,-2]]
+        
     def generate(self, context: List[str], label: List[str], ts: List[np.array], **kwargs):
         _input_ids, _label_ids, ts_emb = self.prepare_inputs(context, label, ts)
-        input_ids = self.tokenizer(context, return_tensors="pt")["input_ids"].to(self.device)
+        context = [f"{DEFAULT_IMAGE_TOKEN}\n" + c for c in  context]
+        conv = conv_templates["llava_llama_2"].copy()
+        conv.append_message(conv.roles[0], context[0])
+        conv.append_message(conv.roles[1], None)
+        prompt = conv.get_prompt()
+        input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).to(self.device)
         # Only generate after 
         output = self.model.generate(
                     images=ts_emb,
                     input_ids=input_ids,
-                    max_new_tokens=200,
-                    num_beams=3, 
+                    max_new_tokens = 200,
+                    temperature=0.7,
                     eos_token_id=self.tokenizer.eos_token_id,
                 )
 
-        output_strs = [self.tokenizer.decode(o, skip_special_tokens=True) for o in output]
-        res_gen = zip(context, output_strs, label, ts)
+        output_str =  self.tokenizer.decode(output[0, input_ids.shape[1]:]).strip()
+        res_gen = zip(context, [output_str], label, ts)
         return [{"context": c, "result": r, "label": l, "ts" : list(t)} for c, r, l, t in res_gen]
 
 
+class SpectrogramEncoder(nn.Module):
+    """ 
+    This encoder converts the time series data into a spectrogram image.
+    """ 
+
+    def __init__(self, dim: int = 64,
+                 pad_val: int = 0,
+                 output_shape: Tuple[int] = (3, 224, 224),
+                 *args, **kwargs) -> None:
+        
+        super().__init__(*args, **kwargs)
+        self.dim = dim
+        self.output_shape = output_shape
+        self.pad_val = pad_val
+
+    
+    
+
+    def forward(self, ts: List[torch.Tensor]) -> torch.Tensor:
+        to_return = []
+        for t in ts:
+            nfft = min(ts.shape[1], max(256, 2 ** math.ceil(math.log2(t.shape[-1]))))
+            transform = torchaudio.transforms.Spectrogram(n_fft=nfft).to(t.device)
+            spectrogram = transform(t)
+            spectrogram = torch.log1p(spectrogram)
+            spectrogram = torch.unsqueeze(spectrogram, 0)
+
+            # Pad the spectrogram to match the output shape
+            pad = nn.ZeroPad2d((0, self.output_shape[2] - spectrogram.shape[2], 0, self.output_shape[1] - spectrogram.shape[1]))
+            spectrogram = pad(spectrogram)
+
+            # Tile the spectrogram to have three channels
+            spectrogram = spectrogram.repeat(1, 3, 1, 1)
+
+            to_return.append(spectrogram)
+        return torch.cat(to_return, dim=0)
+ 
 class MatplotlibEncoder(nn.Module):
     """ 
     This encoder plots the ts as a matplotlib figure and then encodes the figure as an image.
