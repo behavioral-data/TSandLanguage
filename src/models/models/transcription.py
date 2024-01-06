@@ -202,5 +202,5 @@ class HFTranscriptionModel(MultimodalModel):
         # label_strs = [self.tokenizer.decode(l, skip_special_tokens=True) for l in label]
 
         res_gen = zip(context_strs, output_strs, label, ts)
-        return [{"context": c, "result": r, "label": l, "ts" : t} for c, r, l, t in res_gen]
+        return [{"context": c, "result": r, "label": l, "ts" : list(t)} for c, r, l, t in res_gen]
     
