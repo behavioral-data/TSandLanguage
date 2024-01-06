@@ -27,5 +27,6 @@ dependencies:
     - wandb 
     - openai
     - jsonargparse[all]
+    - torchaudio
 variables:
   USE_TORCH: 1
