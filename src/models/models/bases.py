@@ -33,6 +33,7 @@ class SensingModel(pl.LightningModule):
                        compute_metrics: bool = True,
                        optimizer: OptimizerCallable = torch.optim.Adam,
                        lr_scheduler: LRSchedulerCallable = torch.optim.lr_scheduler.ConstantLR,
+                       test_results_save_path: str = None,
                        input_shape : Optional[Tuple[int,...]] = None,
                        reset_weights_before_fit=False):
         
@@ -61,6 +62,7 @@ class SensingModel(pl.LightningModule):
             self.test_metrics = torchmetrics.MetricCollection([])
             
 
+        self.test_results_save_path = test_results_save_path
         self.learning_rate = learning_rate
         self.warmup_steps = warmup_steps
         self.batch_size = batch_size
@@ -153,9 +155,13 @@ class SensingModel(pl.LightningModule):
                         record = {
                             "log_prob": log_probs[i].cpu().numpy(),
                             "label_index": label_index[i],
-                            "label": batch["label"][i]
+                            "label": batch["label"][i],
                         }
-
+                        other_keys = ["ts_qid","uuid","category"]
+                        for key in other_keys:
+                            if key in batch:
+                                record.update({key:batch.get(key)[i]})
+        
                         getattr(self, f"{loss_key}_results").append(record)
 
                 else:
@@ -194,10 +200,14 @@ class SensingModel(pl.LightningModule):
         # Clean up
         self.test_metrics.reset()
 
-        if len(self.test_results) > 0 and isinstance(self.logger, WandbLogger):
-            upload_pandas_df_to_wandb(logger=self.logger,
+        if len(self.test_results) > 0: 
+            if isinstance(self.logger, WandbLogger):
+                upload_pandas_df_to_wandb(logger=self.logger,
                                   table_name="test_results",
                                   df=pd.DataFrame(self.test_results))
+            if self.test_results_save_path is not None:
+                pd.DataFrame(self.test_results).to_csv(self.test_results_save_path,index=False)
+                
         self.test_results = []
 
         super().on_test_epoch_end()
