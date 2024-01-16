@@ -68,6 +68,7 @@ class MultimodalMCQDataset(ListDataset):
         self.shuffle_labels = shuffle_labels
         self.context_columns = context_columns
         self.format_abc_mcq = format_abc_mcq
+        self.other_keys = ["ts_qid","uuid","category"]
 
         super().__init__(data)
 
@@ -95,14 +96,20 @@ class MultimodalMCQDataset(ListDataset):
             options = [f"{chr(ord('A') + i)}" for i, x in enumerate(options)]
             context = context + "\n" + "\n".join(full_options)
 
-
-        return {
+    
+        base =  {
             "context" : context,
             "ts" : data[self.ts_column],
             "label" : chr(ord('A') + label_index),
             "options" : options,
             "label_index" : label_index
         }
+
+        for key in self.other_keys:
+            if key in data:
+                base[key] = data[key]   
+    
+        return base
 
 class MultimodalTask(Task, MultimodalMixin):
 
