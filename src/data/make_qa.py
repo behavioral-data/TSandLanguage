@@ -106,17 +106,15 @@ From the image, I can tell that the number of sales peakjed at ~600 and prior to
 Final answer: The statement is false, because the number of calls peaked at ~600 and prior to that peak had a mean of ~200 calls per day.
 
 
-In each of the following, the correct answer is the first option. The other options are incorrect, but plausible.
-
 ```json
 [
     {"category : "counterfactual_reasoning",
-     "question": "How would the total number of calls in this month change if the product launch was delayed by three days?",
+     "question": "How would the calls in this month change if at most 1000 calls could be taken in January?",
      "options": 
-        ["The total number of calls would not change by much, since the peak introduced by the shift would still be within the one month window",
-        "The total number of calls would increase by a lot, since the peak introduced by the shift would still be within the one month window",
-        "The total number of calls would decrease by a lot, since the peak introduced by the shift would still be within the one month window",
-        "The total number of calls would not change by much, since the peak introduced by the shift would be outside the one month window",
+        ["The total number of calls would not change by much, since the peak is less than 1000",
+        "The total number of calls would be much less because the series frequently peaks above 1000",
+        "The number of calls would constantly be 1000 since there are almost always more than 1000 calls at any time,
+        "The total number of calls would not change by much since nothing out of the ordinary happened this month",
         ]
      "label_index": 0 
   },
@@ -133,12 +131,12 @@ In each of the following, the correct answer is the first option. The other opti
   },
   {
     "category": "argumentation",
-    "question": "Why might I not need to hire more call center staff?",
+    "question": "Should I hire more call center staff?",
     "options": [
-        "One reason to not hire more staff is that the call volume seems to have returned to the baseline.",
+        "You shouldn't hire more staff because the call volume seems to have returned to the baseline.",
         "You should hire more staff because calls hit their limit.",
-        "You should hire more staff because calls are increasing.",
-        "You should hire more staff because calls are decreasing.",
+        "You shouldn't hire more staff because calls went to zero.",
+        "You shouldn't hire more staff because calls are decreasing.",
         ],
     "label_index": 0
   }
@@ -166,7 +164,6 @@ In each of the following, the correct answer is the first option. The other opti
   }
 }
 ```
-*** End of expected output ***
 
 Can you please generate similar questions for the time series I provided? 
 The following instructions are VERY IMPORTANT to follow. EACH QUESTION MUST MATCH THESE CRITERIA:
@@ -181,10 +178,24 @@ The following instructions are VERY IMPORTANT to follow. EACH QUESTION MUST MATC
     "What factors could contribute to a repetitive pattern of higher traffic on weekends?
         is not as good as:
     "What factors could contribute to the pattern of traffic?        
+    
     or 
+
     "Can you think of similar scenarios where external events significantly increase customer traffic?"
     is not as good as:
     "Can you think of similar scenarios where external events have the same impact on traffic?"
+
+    or 
+
+    "What could be a reason for the temperature to stabilize after the recovery period?"
+    is not as good as 
+    "Why does the temperature behave the way it does in the last quarter of the period"?
+
+    or 
+
+    "How would the total number of calls made change if the product was never launched"
+    is not as a good as 
+    "How would the total number of calls in this month change if at most 1000 calls could be taken at once?"
 
 2. Your questions and answers should not explicitly reference the code that was used to generate the time series,
     or the picture of the time series. Simply integrate the information.
@@ -192,7 +203,7 @@ The following instructions are VERY IMPORTANT to follow. EACH QUESTION MUST MATC
     ""To verify the accuracy of this statement, one would need to examine the actual ticket sales data before and after the sequel release day to see if there was indeed a 100% increase from one day to the next.""
     is not as good as:
     ""The statement is false, because the number of calls peaked at ~600 and prior to that peak had a mean of ~200 calls per day.""
-4. Make sure to output the results as a JSON file, as above 
+4. Make sure to output the results as a JSON file, as above. Also include the step by step reasoning. 
 
 """
 
@@ -237,7 +248,7 @@ def get_payload(prompt, image_path):
             ] 
             }
     ],
-    "temperature": 0.3,
+    "temperature": 0.8,
     # "top_p": 0.95,
     "max_tokens": 4000
     }
@@ -282,8 +293,11 @@ def extract_json_from_response_text(response_text):
 
 if __name__ == "__main__":
     scenarios = read_jsonl("data/processed/ts2desc/v2.jsonl")
-    output_dir = "data/processed/mikes_qa_prompt_v2.jsonl"
-
+    output_dir = "data/processed/mikes_qa_debug.jsonl"
+    skip_to = "1b780294-8d0f-4a92-b9f0-435788a33265"
+    if skip_to:
+        uuid_idx = [s["uuid"] for s in scenarios].index(skip_to)
+        scenarios = scenarios[uuid_idx+1:]
     for scenario in tqdm(scenarios):
         try:
             uuid = scenario["uuid"]
@@ -298,6 +312,7 @@ if __name__ == "__main__":
                 json_repr = json.loads(json_text)
                 for question in json_repr:
                     question["uuid"] = uuid
+                    question["prompt_version"] = "2"
                     f.write(json.dumps(question))
                     f.write("\n")
 
