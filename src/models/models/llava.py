@@ -528,7 +528,7 @@ class LLaVATS(LlavaLlamaForCausalLM):
             
             if encoder_name == "matplotlib":
                 base_vision_tower = build_vision_tower(config, delay_load=True)
-                mpl_encoder = MatplotlibEncoder(dim=base_vision_tower.config.image_size)
+                mpl_encoder = MatplotlibEncoder(dim=base_vision_tower.config.image_size,)
                 vision_tower = nn.Sequential(mpl_encoder, base_vision_tower)
                 vision_tower.is_loaded = False
                 vision_tower.load_model = base_vision_tower.load_model
@@ -564,10 +564,10 @@ class LLaVA(MultimodalModel):
             
         MultimodalModel.__init__(self, **kwargs)
         if model_name is None:
-            model_name = hf_name_or_path.split("/")[-1]
+            self.model_name = hf_name_or_path.split("/")[-1]
         
         self.tokenizer, self.model, self.context_len \
-            = load_pretrained_llava(hf_name_or_path, model_base, model_name,
+            = load_pretrained_llava(hf_name_or_path, model_base, self.model_name,
                                     encoder_name=encoder_name, clip_path=clip_path)
         
         self.model.to(dtype=torch.bfloat16)
@@ -639,6 +639,8 @@ class LLaVA(MultimodalModel):
         return torch.vstack(overall_probs).T  # [B, num_classes]
     
     def forward(self,context: List[str], label: List[str], ts: List[np.array], compute_class_probs=None, **kwargs):
+        if np.max(np.abs(ts)) > 1e10:
+            return None, None
         input_ids, label_ids , ts_emb = self.prepare_inputs(context, label, ts)
         outputs = self.model(input_ids=input_ids, labels=label_ids, images = ts_emb)
         return outputs.loss, outputs.logits[..., :-1, :]
@@ -665,7 +667,11 @@ class LLaVA(MultimodalModel):
     def generate(self, context: List[str], label: List[str], ts: List[np.array], **kwargs):
         _input_ids, _label_ids, ts_emb = self.prepare_inputs(context, label, ts)
         context = [f"{DEFAULT_IMAGE_TOKEN}\n" + c for c in  context]
-        conv = conv_templates["llava_llama_2"].copy()
+        if "v1" in self.model_name.lower():
+            conv = conv_templates["default"].copy()
+        else:
+            conv = conv_templates["llava_llama_2"].copy()
+
         conv.append_message(conv.roles[0], context[0])
         conv.append_message(conv.roles[1], None)
         prompt = conv.get_prompt()
@@ -755,7 +761,7 @@ class MatplotlibEncoder(nn.Module):
             
             # Resize the image
             image = Image.fromarray(image)
-            image = transforms.Resize(self.output_shape[-2:])(image)
+            image = transforms.Resize((self.dim, self.dim))(image)
             image = transforms.ToTensor()(image)
             to_return.append(image.type(t.dtype).to(t))
         return torch.stack(to_return, dim=0)
