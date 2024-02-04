@@ -125,6 +125,8 @@ class SensingModel(pl.LightningModule):
 
     def common_step(self, batch, loss_key):
         loss, preds = self.forward(**batch)
+        if loss is None:
+            return None
  
         self.handle_options(batch)
 
@@ -157,7 +159,7 @@ class SensingModel(pl.LightningModule):
                             "label_index": label_index[i],
                             "label": batch["label"][i],
                         }
-                        other_keys = ["ts_qid","uuid","category"]
+                        other_keys = ["ts_qid","uuid","category","question","options"]
                         for key in other_keys:
                             if key in batch:
                                 record.update({key:batch.get(key)[i]})
