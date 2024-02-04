@@ -28,6 +28,7 @@ from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
 
 from src.models.models.bases import MultimodalModel
 from src.models.models.timesnet import TimesNetEncoder
+from src.models.models.layers.embed import TSPerceiverResampler
 
 
 def _tokenize_fn(strings: Sequence[str],
@@ -544,6 +545,9 @@ class LLaVATS(LlavaLlamaForCausalLM):
                 vision_tower = TimesNetEncoder(device=self.device)
                 vision_tower.is_loaded = False
             
+            elif encoder_name == "simple_cnn":
+                vision_tower = SimpleCNNEncoder(device=self.device)
+                vision_tower.is_loaded = False
             else:
                 raise NotImplementedError(f"Unknown encoder name {encoder_name}")
             
@@ -577,7 +581,7 @@ class LLaVA(MultimodalModel):
         for p in self.model.get_model().mm_projector.parameters():
              p.requires_grad = True
 
-        if encoder_name == "timesnet" or thaw_vision_encoder:
+        if encoder_name in ["timesnet","simple_cnn"] or thaw_vision_encoder:
             for p in self.model.get_model().vision_tower.parameters():
                 p.requires_grad = True
         
@@ -736,6 +740,7 @@ class MatplotlibEncoder(nn.Module):
                 pad_val : int = 0,
                 output_shape : Tuple[int] = (3,224,224),
                 use_ticks: bool = True,
+                agg:SpectrogramEncoder = "seperate",
                 *args, **kwargs) -> None:
         
         super().__init__(*args, **kwargs)
@@ -743,8 +748,9 @@ class MatplotlibEncoder(nn.Module):
         self.output_shape = output_shape
         self.pad_val = pad_val
         self.use_ticks = use_ticks
+        self.aggregator = agg
     
-    def forward(self, ts: List[torch.Tensor]) -> torch.Tensor:
+    def forward_seperate(self, ts: List[torch.Tensor]) -> torch.Tensor:
         to_return = []
         for t in ts:
             fig, ax = plt.subplots()
@@ -765,3 +771,65 @@ class MatplotlibEncoder(nn.Module):
             image = transforms.ToTensor()(image)
             to_return.append(image.type(t.dtype).to(t))
         return torch.stack(to_return, dim=0)
+    
+    def forward_plot_together(self, ts: List[torch.Tensor]) -> torch.Tensor:
+        to_return = []
+        fig, ax = plt.subplots()
+        for t in ts:
+            ax.plot(t.cpu().numpy())
+        if not self.use_ticks:
+            ax.set_xticks([])
+            ax.set_yticks([])
+        fig.canvas.draw()
+        fig.tight_layout(pad=0)
+        width, height = fig.get_size_inches() * fig.get_dpi()
+        width, height = int(width), int(height)
+        image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8').reshape(height, width, 3)
+        plt.close(fig)
+        
+        # Resize the image
+        image = Image.fromarray(image)
+        image = transforms.Resize((self.dim, self.dim))(image)
+        image = transforms.ToTensor()(image)
+        to_return.append(image.type(t.dtype).to(t))
+        return torch.stack(to_return, dim=0)
+    
+    def forward(self, ts: List[torch.Tensor]) -> torch.Tensor:
+        if self.aggregator == "seperate":
+            return self.forward_seperate(ts)
+        elif self.aggregator == "plot_together":
+            return self.forward_plot_together(ts)
+        else:
+            raise ValueError(f"Unknown aggregator {self.aggregator}")
+
+
+class SimpleCNNEncoder(nn.Module):
+
+    def __init__(self, d_model :int = 1024, device=None, *args, **kwargs) -> None:
+        
+        super().__init__()
+        self.resampler = TSPerceiverResampler(dim=d_model, depth=2)
+        self.conv1 = nn.Conv1d(1, 16, 3, padding=1)
+        self.conv2 = nn.Conv1d(16, 1, 3, padding=1)
+        self.device = device
+
+
+    def forward(self, ts: List[torch.Tensor]) -> torch.Tensor:
+        if len(ts) > 1:
+            raise ValueError(f"Expected batch size of one time series for now, got {len(ts)}")
+        ts = self.resampler(ts[0])
+        ts = self.conv1(ts)
+        ts = self.conv2(ts)
+        ts = ts.view(ts.shape[0], -1).unsqueeze(0)  
+        return ts 
+
+    
+        # Is required when training as part of LLaVA for mytical reasons. 
+    def load_model(self):
+        for layer in self.modules():
+            if hasattr(layer, 'reset_parameters'):
+                layer.reset_parameters()
+            
+            for param in layer.parameters():
+                param.requires_grad = True
+    

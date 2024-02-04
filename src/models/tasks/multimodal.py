@@ -68,7 +68,7 @@ class MultimodalMCQDataset(ListDataset):
         self.shuffle_labels = shuffle_labels
         self.context_columns = context_columns
         self.format_abc_mcq = format_abc_mcq
-        self.other_keys = ["ts_qid","uuid","category"]
+        self.other_keys = ["ts_qid","uuid","category","question","options"]
 
         super().__init__(data)
 
