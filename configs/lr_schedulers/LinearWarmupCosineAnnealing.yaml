@@ -1,0 +1,4 @@
+class_path: torch.optim.lr_scheduler.ConstantLR
+init_args:
+  warmup_epochs: 1
+  max_epochs: 10
