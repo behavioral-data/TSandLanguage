@@ -69,8 +69,8 @@ class SensingModel(pl.LightningModule):
         
         self.optimizer=optimizer
         self.scheduler=lr_scheduler
-
         self.wandb_id = None
+
         self.name = None
 
         self.reset_weights_before_fit = reset_weights_before_fit
@@ -147,7 +147,7 @@ class SensingModel(pl.LightningModule):
                 if self.is_mcq_task:
                     options =  batch["options"]
                     label_index = batch["label_index"]
-                    log_probs = torch.stack([compute_log_probs(l, o) for l,o in zip(preds,options)])
+                    log_probs = torch.stack([compute_log_probs(l, o) for l,o in zip(preds,options)]).cpu().numpy()
 
                     # Unfold the batch back into records
                     preds = preds.flatten()
@@ -155,11 +155,11 @@ class SensingModel(pl.LightningModule):
                     
                     for i in range(len(log_probs)):
                         record = {
-                            "log_prob": log_probs[i].cpu().numpy(),
+                            "log_prob": log_probs[i],
                             "label_index": label_index[i],
                             "label": batch["label"][i],
                         }
-                        other_keys = ["ts_qid","uuid","category","question","options"]
+                        other_keys = ["ts_qid","uuid","category","question"]
                         for key in other_keys:
                             if key in batch:
                                 record.update({key:batch.get(key)[i]})
@@ -246,6 +246,7 @@ class SensingModel(pl.LightningModule):
         #TODO: Add support for other optimizers and lr schedules?
         optimizer = self.optimizer(self.parameters(), lr=self.learning_rate)
         scheduler = self.scheduler(optimizer)
+
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
     
     def optimizer_step( self,
@@ -253,7 +254,7 @@ class SensingModel(pl.LightningModule):
                         batch_idx: int,
                         optimizer,
                         optimizer_closure):
-        
+
         if self.trainer.global_step < self.warmup_steps:
             lr_scale = min(1., float(self.trainer.global_step + 1) / (self.warmup_steps + 1))
             for pg in optimizer.param_groups:
