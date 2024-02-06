@@ -25,10 +25,12 @@ from PIL import Image
 from torch import nn
 from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
                           BitsAndBytesConfig)
+import pandas as pd
 
 from src.models.models.bases import MultimodalModel
 from src.models.models.timesnet import TimesNetEncoder
 from src.models.models.layers.embed import TSPerceiverResampler
+from src.models.models import lagllama 
 
 
 def _tokenize_fn(strings: Sequence[str],
@@ -548,6 +550,11 @@ class LLaVATS(LlavaLlamaForCausalLM):
             elif encoder_name == "simple_cnn":
                 vision_tower = SimpleCNNEncoder(device=self.device)
                 vision_tower.is_loaded = False
+
+            elif encoder_name == "lagllama":
+                LAG_LLAMA_PATH = "/mmfs1/gscratch/bdata/mikeam/pytorch-transformer-ts/pretrained_checkpoints/epoch=199-step=20000.ckpt"
+                vision_tower = LagLlamaEncoder(LAG_LLAMA_PATH,device=self.device, output_len=config.mm_hidden_size)
+                vision_tower.is_loaded = False
             else:
                 raise NotImplementedError(f"Unknown encoder name {encoder_name}")
             
@@ -581,7 +588,7 @@ class LLaVA(MultimodalModel):
         for p in self.model.get_model().mm_projector.parameters():
              p.requires_grad = True
 
-        if encoder_name in ["timesnet","simple_cnn"] or thaw_vision_encoder:
+        if encoder_name in ["timesnet","simple_cnn", "lagllama"] or thaw_vision_encoder:
             for p in self.model.get_model().vision_tower.parameters():
                 p.requires_grad = True
         
@@ -591,6 +598,7 @@ class LLaVA(MultimodalModel):
             self.tokenizer.pad_token_id = 0
         
         self.save_hyperparameters()
+    
         
     def prepare_inputs(self, context: List[str], label: List[str], ts: List[np.array]):
         
@@ -658,6 +666,11 @@ class LLaVA(MultimodalModel):
                 results.append(self.tokenizer(new_options,return_tensors="pt", padding=True)["input_ids"])
             
             batch["options"] = results
+
+    def setup(self, stage):
+        self.model.to(self.device)
+        self.model.get_model().vision_tower.to(self.device)
+        self.model.get_model().mm_projector.to(self.device)
 
     def get_log_probs_for_class(self, context: str, ts: np.array, class_name: str, **kwargs):
         context = context + "\nReply with the correct letter only."
@@ -832,4 +845,76 @@ class SimpleCNNEncoder(nn.Module):
             
             for param in layer.parameters():
                 param.requires_grad = True
+
+
+
+def pad_and_reshape_array(array, MAX_LENGTH):
+    current_length = array.shape[0]
+    padding_needed = (MAX_LENGTH - current_length % MAX_LENGTH) % MAX_LENGTH
+    padded_array = np.pad(array, (0, padding_needed), 'constant', constant_values=(0,))
+    new_shape = (padded_array.size // MAX_LENGTH, MAX_LENGTH)
+    reshaped_array = padded_array.reshape(new_shape)
+    return reshaped_array
+
+
+
+def simple_collate_fn(batch, device=None):
+    collated_batch = {}
     
+    # Assuming all dictionaries have the same keys
+    for key in batch[0]:
+        values = [d[key] for d in batch]
+        
+        # Check if values are tensor-compatible (e.g., numeric types)
+        if all(isinstance(v, (int, float, list, torch.Tensor, np.ndarray)) for v in values):
+            try:
+                # Convert values to tensor, handling cases where values are already tensors
+                tensor_values = torch.tensor(values) if not isinstance(values[0], torch.Tensor) else torch.stack(values)
+            except ValueError as e:
+                # Handle cases where tensor conversion is not directly possible (e.g., lists of different lengths)
+                print(f"Warning: Could not convert values for key '{key}' to a tensor: {e}")
+                tensor_values = values  # Leave as is or handle specially
+            collated_batch[key] = tensor_values.to(device,torch.float32)
+        else:
+            # For non-numeric types, you can decide how to handle them (e.g., leave as list)
+            collated_batch[key] = values
+    
+    return collated_batch
+
+class LagLlamaEncoder(nn.Module):
+
+    def __init__(self, ckpt_path:str, device=None, output_len = 256*4, *args, **kwargs) -> None:
+        # For now we're only going to support loading the model from the weights
+        super().__init__()
+        self.ckpt_path = ckpt_path
+        self.model = lagllama.LagLlamaModel.from_checkpoint(ckpt_path, return_embeddings=True)
+        self.transformation = lagllama.create_transformation()
+        self.device = device
+        self.final_mapping = nn.Linear(256, output_len)
+        # Hardcoded from training
+        self.max_context_length = 1349
+
+    
+    def forward(self, ts: List[torch.Tensor]) -> torch.Tensor:
+        input_device = ts[0].device
+        reshaped_ts = [pad_and_reshape_array(x.cpu().numpy(), self.max_context_length) for x in ts]
+        # This gets the time series into the shape that the model expects
+        windowed_ts = []
+        embs = []
+        for ts in reshaped_ts:
+            to_transform = [{"start": pd.Period("2020-02-02", freq="1W"), "past_target": x} for x in ts]
+            values = list(self.transformation(to_transform,False))
+            to_model = simple_collate_fn(values,device=input_device)
+            to_model["future_time_feat"] = None
+            to_model["past_time_feat"] = to_model["past_time_feat"][...,:-1].transpose(1,2)
+            del to_model["start"]
+            embs.append(self.model(**to_model).mean(dim=0).mean(dim=0))
+        return self.final_mapping(torch.stack(embs, dim=0)).unsqueeze(0)
+    
+
+    def load_model(self):
+        self.model = lagllama.LagLlamaModel.from_checkpoint(self.ckpt_path, return_embeddings=True)
+        
+        for layer in self.modules():
+            if hasattr(layer, 'reset_parameters'):
+                layer.reset_parameters()

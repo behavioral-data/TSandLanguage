@@ -254,7 +254,6 @@ if __name__ == "__main__":
         os.remove("lightning_config.yaml")
     except FileNotFoundError:
         pass
-
     cli = CLI(trainer_defaults=trainer_defaults,
             parser_kwargs={"parser_mode": "omegaconf"},
             save_config_callback=WandBSaveConfigCallback)
