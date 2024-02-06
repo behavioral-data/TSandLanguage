@@ -1,0 +1,21 @@
+# lightning.pytorch==2.1.2
+model:
+  class_path: src.models.models.LLaVA
+  init_args:
+    hf_name_or_path: liuhaotian/llava-v1.5-13b
+    model_base: null
+    model_name: null
+    encoder_name: matplotlib
+    val_bootstraps: 0
+    warmup_steps: 10
+    batch_size: 1
+    compute_metrics: true
+    optimizer: torch.optim.Adam
+    lr_scheduler:
+      class_path: torch.optim.lr_scheduler.ConstantLR
+      init_args:
+        factor: 1.2
+        total_iters: 5
+        last_epoch: -1
+        verbose: false
+    reset_weights_before_fit: false
