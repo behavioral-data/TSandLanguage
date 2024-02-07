@@ -52,6 +52,7 @@ class MultimodalMCQDataset(ListDataset):
     def __init__(self, data, tokenizer, 
                  context_prefix="",
                  ts_column="ts",
+                 contrastive_column=None,
                  label_column="source",
                  options_column="options",
                  shuffle_labels=False,
@@ -66,10 +67,12 @@ class MultimodalMCQDataset(ListDataset):
         self.label_column = label_column
         self.options_column = options_column
         self.shuffle_labels = shuffle_labels
+        self.contrastive_column = contrastive_column
         self.context_columns = context_columns
         self.format_abc_mcq = format_abc_mcq
         self.other_keys = ["ts_qid","uuid","category","question","options"]
-
+        if contrastive_column:
+            self.other_keys.append(contrastive_column)
         super().__init__(data)
 
     def __getitem__(self, index) -> Dict:
@@ -95,12 +98,20 @@ class MultimodalMCQDataset(ListDataset):
             full_options = [f"{chr(ord('A') + i)}) {x}" for i, x in enumerate(options)]
             options = [f"{chr(ord('A') + i)}" for i, x in enumerate(options)]
             context = context + "\n" + "\n".join(full_options)
+            answer = f"{chr(ord('A') + label_index)}){options[label_index]}"
 
-    
+        else:
+            answer = chr(ord('A') + label_index)
+
+        if self.contrastive_column:
+            ts = [data[self.ts_column],data[self.contrastive_column]]
+        else:
+            ts = data[self.ts_column]
+
         base =  {
             "context" : context,
-            "ts" : data[self.ts_column],
-            "label" : chr(ord('A') + label_index),
+            "ts" : ts,
+            "label" : answer,
             "options" : options,
             "label_index" : label_index
         }
@@ -120,6 +131,7 @@ class MultimodalTask(Task, MultimodalMixin):
                        batch_size:int = 16,
                        context_prefix:str = "",
                        index_from_options:bool = False,
+                       contrastive_column:Optional[str] = None,
                        **kwargs):
         
         self.cache_path = cache_path
@@ -128,6 +140,7 @@ class MultimodalTask(Task, MultimodalMixin):
         self.label_column = label_column
         self.context_prefix = context_prefix
         self.index_from_options = index_from_options
+        self.contrastive_column = contrastive_column
 
         self.tokenizer = None #TODO Add if ever needed
         self.batch_size = batch_size
@@ -142,7 +155,8 @@ class MultimodalTask(Task, MultimodalMixin):
                                     ts_column=self.ts_column,
                                     label_column=self.label_column,
                                     context_prefix=self.context_prefix,
-                                    index_from_options=self.index_from_options)
+                                    index_from_options=self.index_from_options,
+                                    contrastive_column=self.contrastive_column)
         
         if self.tokenizer:
             data_collator = TokenizePadAndCollate(tokenizer=self.tokenizer,
@@ -196,6 +210,7 @@ class MultimodalMCQTask(MultimodalTask):
                                         format_abc_mcq=self.format_abc_mcq,
                                         label_column=self.label_column,
                                         options_column=self.options_column,
+                                        contrastive_column=self.contrastive_column,
                                         shuffle_labels=self.shuffle_labels)
         
         if self.tokenizer:
