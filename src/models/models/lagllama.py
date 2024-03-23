@@ -1,14 +1,16 @@
-from typing import Optional, List
 import math
 from dataclasses import dataclass
+from typing import List, Optional
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 
+from gluonts.torch.distributions import DistributionOutput
+from gluonts.torch.scaler import MeanScaler, NOPScaler, StdScaler
 from gluonts.torch.util import lagged_sequence_values, unsqueeze_expand
-from gluonts.torch.scaler import StdScaler, MeanScaler, NOPScaler
-from gluonts.torch.distributions import StudentTOutput
+from gluonts.core.component import validated
+from gluonts.torch.scaler import Scaler
 from gluonts.transform import (
     Chain,
     Transformation,
@@ -21,7 +23,6 @@ from gluonts.transform import (
 from gluonts.time_feature import (
     time_features_from_frequency_str,
 )
-from torch.nn.parameter import Parameter
 
 def convert_key(key):
     if key.startswith("model."):
@@ -30,15 +31,6 @@ def convert_key(key):
 
 def convert_pl_state_dict(state_dict):
     return {convert_key(key): value for key, value in state_dict.items()}
-
-@dataclass
-class LTSMConfig:
-    feature_size: int = 3 + 6  # target + loc + scale + time features
-    block_size: int = 2048
-    n_layer: int = 32
-    n_head: int = 32
-    n_embd: int = 4096
-    rope_scaling: Optional[dict] = None
 
 
 def create_transformation() -> Transformation:
@@ -59,32 +51,88 @@ def create_transformation() -> Transformation:
             ),
         ]
     )
+class RobustScaler(Scaler):
+    """
+    Computes a scaling factor by removing the median and scaling by the
+    interquartile range (IQR).
+
+    Parameters
+    ----------
+    dim
+        dimension along which to compute the scale
+    keepdim
+        controls whether to retain dimension ``dim`` (of length 1) in the
+        scale tensor, or suppress it.
+    minimum_scale
+        minimum possible scale that is used for any item.
+    """
+
+    @validated()
+    def __init__(
+        self,
+        dim: int = -1,
+        keepdim: bool = False,
+        minimum_scale: float = 1e-10,
+    ) -> None:
+        self.dim = dim
+        self.keepdim = keepdim
+        self.minimum_scale = minimum_scale
+
+    def __call__(
+        self, data: torch.Tensor, weights: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        assert (
+            data.shape == weights.shape
+        ), "data and observed_indicator must have same shape"
+
+        with torch.no_grad():
+            observed_data = torch.where(weights == 1, data, torch.nan)
+
+            med = torch.nanmedian(observed_data, dim=self.dim, keepdim=True).values
+            q1 = torch.nanquantile(observed_data, 0.25, dim=self.dim, keepdim=True)
+            q3 = torch.nanquantile(observed_data, 0.75, dim=self.dim, keepdim=True)
+            iqr = q3 - q1
+
+            # if observed data is all zeros, nanmedian returns nan
+            loc = torch.where(torch.isnan(med), torch.zeros_like(med), med)
+            scale = torch.where(torch.isnan(iqr), torch.ones_like(iqr), iqr)
+            scale = torch.maximum(scale, torch.full_like(iqr, self.minimum_scale))
+
+            scaled_data = (data - loc) / scale
+
+            if not self.keepdim:
+                loc = torch.squeeze(loc, dim=self.dim)
+                scale = torch.squeeze(scale, dim=self.dim)
+
+            # assert no nans in scaled data, loc or scale
+            assert not torch.any(torch.isnan(scaled_data))
+            assert not torch.any(torch.isnan(loc))
+            assert not torch.any(torch.isnan(scale))
+            assert not torch.any(scale == 0)
+
+            return scaled_data, loc, scale
+@dataclass
+class LTSMConfig:
+    feature_size: int = 3 + 6  # target + loc + scale + time features
+    block_size: int = 2048
+    n_layer: int = 32
+    n_head: int = 32
+    n_embd_per_head: int = 128
+    rope_scaling: Optional[dict] = None
+    dropout: float = 0.0
+
 
 class Block(nn.Module):
     def __init__(self, config: LTSMConfig) -> None:
         super().__init__()
-        self.rms_1 = RMSNorm(config.n_embd)
+        self.rms_1 = RMSNorm(config.n_embd_per_head * config.n_head)
         self.attn = CausalSelfAttention(config)
-        self.rms_2 = RMSNorm(config.n_embd)
+        self.rms_2 = RMSNorm(config.n_embd_per_head * config.n_head)
         self.mlp = MLP(config)
 
-        self.y_cache = None
-
-    def forward(self, x: torch.Tensor, is_test: bool) -> torch.Tensor:
-        if is_test and self.y_cache is not None:
-            # Only use the most recent one, rest is in cache
-            x = x[:, -1:]
-
-        x = x + self.attn(self.rms_1(x), is_test)
+    def forward(self, x: torch.Tensor, use_kv_cache: bool) -> torch.Tensor:
+        x = x + self.attn(self.rms_1(x), use_kv_cache)
         y = x + self.mlp(self.rms_2(x))
-
-        if is_test:
-            if self.y_cache is None:
-                self.y_cache = y  # Build cache
-            else:
-                self.y_cache = torch.cat([self.y_cache, y], dim=1)[
-                    :, 1:
-                ]  # Update cache
         return y
 
 
@@ -229,18 +277,29 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
 class CausalSelfAttention(nn.Module):
     def __init__(self, config: LTSMConfig) -> None:
         super().__init__()
-        assert config.n_embd % config.n_head == 0
-
         # query projections for all heads, but in a batch
-        self.q_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.q_proj = nn.Linear(
+            config.n_embd_per_head * config.n_head,
+            config.n_embd_per_head * config.n_head,
+            bias=False,
+        )
         # key, value projections
-        self.kv_proj = nn.Linear(config.n_embd, 2 * config.n_embd, bias=False)
+        self.kv_proj = nn.Linear(
+            config.n_embd_per_head * config.n_head,
+            2 * config.n_embd_per_head * config.n_head,
+            bias=False,
+        )
         # output projection
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.c_proj = nn.Linear(
+            config.n_embd_per_head * config.n_head,
+            config.n_embd_per_head * config.n_head,
+            bias=False,
+        )
 
         self.n_head = config.n_head
-        self.n_embd = config.n_embd
+        self.n_embd_per_head = config.n_embd_per_head
         self.block_size = config.block_size
+        self.dropout = config.dropout
 
         self.rope_scaling = config.rope_scaling
         self._rope_scaling_validation()
@@ -251,7 +310,7 @@ class CausalSelfAttention(nn.Module):
     def _init_rope(self):
         if self.rope_scaling is None:
             self.rotary_emb = LlamaRotaryEmbedding(
-                self.n_embd // self.n_head, max_position_embeddings=self.block_size
+                self.n_embd_per_head, max_position_embeddings=self.block_size
             )
         else:
             scaling_type = self.rope_scaling["type"]
@@ -260,13 +319,13 @@ class CausalSelfAttention(nn.Module):
                 self.rotary_emb = None
             elif scaling_type == "linear":
                 self.rotary_emb = LlamaLinearScalingRotaryEmbedding(
-                    self.n_embd // self.n_head,
+                    self.n_embd_per_head,
                     max_position_embeddings=self.block_size,
                     scaling_factor=scaling_factor,
                 )
             elif scaling_type == "dynamic":
                 self.rotary_emb = LlamaDynamicNTKScalingRotaryEmbedding(
-                    self.n_embd // self.n_head,
+                    self.n_embd_per_head,
                     max_position_embeddings=self.block_size,
                     scaling_factor=scaling_factor,
                 )
@@ -305,34 +364,34 @@ class CausalSelfAttention(nn.Module):
                     f"`rope_scaling`'s factor field must be an float >= 1, got {rope_scaling_factor}"
                 )
 
-    def forward(self, x: torch.Tensor, is_test: bool) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, use_kv_cache: bool) -> torch.Tensor:
         # batch size, sequence length, embedding dimensionality (n_embd)
         (B, T, C) = x.size()
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        if is_test:
-            # Optimized for single next prediction
-            q = self.q_proj(x[:, -1:])
+        q = self.q_proj(x)
+        k, v = self.kv_proj(x).split(self.n_embd_per_head * self.n_head, dim=2)
 
+        if use_kv_cache:
+            # Optimized for single next prediction
             if self.kv_cache is not None:
                 # Update cache
-                k, v = self.kv_proj(x[:, -1:]).split(self.n_embd, dim=2)
                 k = torch.cat([self.kv_cache[0], k], dim=1)[:, 1:]
                 v = torch.cat([self.kv_cache[1], v], dim=1)[:, 1:]
                 self.kv_cache = k, v
             else:
                 # Build cache
-                k, v = self.kv_proj(x).split(self.n_embd, dim=2)
                 self.kv_cache = k, v
-        else:
-            # Business as usual
-            q = self.q_proj(x)
-            k, v = self.kv_proj(x).split(self.n_embd, dim=2)
 
-        head_size = C // self.n_head
-        k = k.view(B, -1, self.n_head, head_size).transpose(1, 2)  # (B, nh, T, hs)
-        q = q.view(B, -1, self.n_head, head_size).transpose(1, 2)  # (B, nh, T, hs)
-        v = v.view(B, -1, self.n_head, head_size).transpose(1, 2)  # (B, nh, T, hs)
+        k = k.view(B, -1, self.n_head, self.n_embd_per_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        q = q.view(B, -1, self.n_head, self.n_embd_per_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        v = v.view(B, -1, self.n_head, self.n_embd_per_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
 
         if self.rotary_emb is not None:
             cos, sin = self.rotary_emb(device=v.device, dtype=v.dtype, seq_len=T)
@@ -345,9 +404,16 @@ class CausalSelfAttention(nn.Module):
         #  y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 
         # efficient attention using Flash Attention CUDA kernels
-        y = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=None, dropout_p=0.0, is_causal=True
-        )
+        # When using kv cache at inference, is_causal=False since decoder is causal, at each generation step we want
+        # to avoid recalculating the same previous token attention
+        if use_kv_cache:
+            y = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=None, dropout_p=self.dropout, is_causal=False
+            )
+        else:
+            y = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=None, dropout_p=self.dropout, is_causal=True
+            )
 
         # re-assemble all head outputs side by side
         y = y.transpose(1, 2).contiguous().view(B, T, C)
@@ -367,13 +433,19 @@ def find_multiple(n: int, k: int) -> int:
 class MLP(nn.Module):
     def __init__(self, config: LTSMConfig) -> None:
         super().__init__()
-        hidden_dim = 4 * config.n_embd
+        hidden_dim = 4 * config.n_embd_per_head * config.n_head
         n_hidden = int(2 * hidden_dim / 3)
         n_hidden = find_multiple(n_hidden, 256)
 
-        self.c_fc1 = nn.Linear(config.n_embd, n_hidden, bias=False)
-        self.c_fc2 = nn.Linear(config.n_embd, n_hidden, bias=False)
-        self.c_proj = nn.Linear(n_hidden, config.n_embd, bias=False)
+        self.c_fc1 = nn.Linear(
+            config.n_embd_per_head * config.n_head, n_hidden, bias=False
+        )
+        self.c_fc2 = nn.Linear(
+            config.n_embd_per_head * config.n_head, n_hidden, bias=False
+        )
+        self.c_proj = nn.Linear(
+            n_hidden, config.n_embd_per_head * config.n_head, bias=False
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.silu(self.c_fc1(x)) * self.c_fc2(x)
@@ -408,28 +480,36 @@ class RMSNorm(nn.Module):
 class LagLlamaModel(nn.Module):
     def __init__(
         self,
+        context_length: int,
         max_context_length: int,
         scaling: str,
         input_size: int,
         n_layer: int,
-        n_embd: int,
+        n_embd_per_head: int,
         n_head: int,
         lags_seq: List[int],
+        distr_output: DistributionOutput,
         rope_scaling=None,
-        distr_output=StudentTOutput(),
         num_parallel_samples: int = 100,
-        return_embeddings: bool = False,
+        time_feat: bool = True,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
+        self.context_length = context_length
         self.lags_seq = lags_seq
+        if time_feat:
+            feature_size = input_size * (len(self.lags_seq)) + 2 * input_size + 6
+        else:
+            feature_size = input_size * (len(self.lags_seq)) + 2 * input_size
 
         config = LTSMConfig(
             n_layer=n_layer,
-            n_embd=n_embd,
+            n_embd_per_head=n_embd_per_head,
             n_head=n_head,
             block_size=max_context_length,
-            feature_size=input_size * (len(self.lags_seq)) + 2 * input_size + 6,
+            feature_size=feature_size,
             rope_scaling=rope_scaling,
+            dropout=dropout,
         )
         self.num_parallel_samples = num_parallel_samples
 
@@ -437,20 +517,26 @@ class LagLlamaModel(nn.Module):
             self.scaler = MeanScaler(keepdim=True, dim=1)
         elif scaling == "std":
             self.scaler = StdScaler(keepdim=True, dim=1)
+        elif scaling == "robust":
+            self.scaler = RobustScaler(keepdim=True, dim=1)
         else:
             self.scaler = NOPScaler(keepdim=True, dim=1)
+
         self.distr_output = distr_output
-        self.param_proj = self.distr_output.get_args_proj(config.n_embd)
+        self.param_proj = self.distr_output.get_args_proj(
+            config.n_embd_per_head * config.n_head
+        )
 
         self.transformer = nn.ModuleDict(
             dict(
-                wte=nn.Linear(config.feature_size, config.n_embd),
+                wte=nn.Linear(
+                    config.feature_size, config.n_embd_per_head * config.n_head
+                ),
                 h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-                ln_f=RMSNorm(config.n_embd),
+                ln_f=RMSNorm(config.n_embd_per_head * config.n_head),
             )
         )
-
-        self.return_embeddings = return_embeddings
+        self.y_cache = False  # used at time of inference when kv cached is used
 
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
@@ -461,90 +547,110 @@ class LagLlamaModel(nn.Module):
             torch.nn.init.normal_(
                 module.weight, mean=0.0, std=0.02 / math.sqrt(2 * self.config.n_layer)
             )
-    
-    @staticmethod
-    def from_checkpoint(path, **kwargs):
-        state_dict = torch.load(path)
-        model_state_dict = convert_pl_state_dict(state_dict["state_dict"])
-        model_kwargs = state_dict['hyper_parameters']["model_kwargs"]
-        model_kwargs.update(kwargs)
-        model = LagLlamaModel(**model_kwargs)
-        model.load_state_dict(model_state_dict)
-        return model
 
     def prepare_input(
         self,
         past_target: torch.Tensor,
         past_observed_values: torch.Tensor,
-        past_time_feat: torch.Tensor,
-        future_time_feat: torch.Tensor,
+        past_time_feat: Optional[torch.Tensor] = None,
+        future_time_feat: Optional[torch.Tensor] = None,
         future_target: Optional[torch.Tensor] = None,
     ):
-        scaled_past_target, loc, scale = self.scaler(past_target, past_observed_values)
+        scaled_past_target, loc, scale = self.scaler(
+            past_target, past_observed_values
+        )  # Data is standardized (past_observed_values is passed as "weights" parameter) # (bsz, context_length+max(self.lags_seq)
 
+        # In the below code, instead of max(self.lags_seq), it was previously -self.context_length
         if future_target is not None:
             input = torch.cat(
                 (
-                    scaled_past_target[..., max(self.lags_seq) :],
-                    (future_target[..., :-1] - loc) / scale,
+                    scaled_past_target[..., max(self.lags_seq) :],  # Just the context
+                    (future_target[..., :-1] - loc)
+                    / scale,  # Not sure about the -1 here. Maybe so since the last value isn't used in the model for prediction of any new values. also if the prediction length is 1, this doesn't really affect anything
                 ),
                 dim=-1,
-            )
+            )  # Shape is (bsz, context_length+(pred_len-1))
         else:
             input = scaled_past_target[..., max(self.lags_seq) :]
-
-        time_feat = (
-            torch.cat(
-                (
-                    past_time_feat[..., max(self.lags_seq) :, :],
-                    future_time_feat[..., :-1, :],
-                ),
-                dim=1,
+        if (past_time_feat is not None) and (future_time_feat is not None):
+            time_feat = (
+                torch.cat(
+                    (
+                        past_time_feat[..., max(self.lags_seq) :, :],
+                        future_time_feat[..., :-1, :],
+                    ),
+                    dim=1,
+                )
+                if future_time_feat is not None
+                else past_time_feat[..., max(self.lags_seq) :, :]
             )
-            if future_time_feat is not None
-            else past_time_feat[..., max(self.lags_seq) :, :]
-        )
 
-        prior_input = (past_target[..., : max(self.lags_seq)] - loc) / scale
-        lags = lagged_sequence_values(self.lags_seq, prior_input, input, dim=-1)
+        prior_input = (
+            past_target[..., : max(self.lags_seq)] - loc
+        ) / scale  # This the history used to construct lags.  # bsz, max(self.lags_seq)
 
-        static_feat = torch.cat((loc.abs().log1p(), scale.log()), dim=-1)
+        lags = lagged_sequence_values(
+            self.lags_seq, prior_input, input, dim=-1
+        )  # Lags are added as an extra dim. Shape is (bsz, context_length+(pred_len-1), len(self.lags_seq))
+
+        static_feat = torch.cat(
+            (loc.abs().log1p(), scale.log()), dim=-1
+        )  # (bsz, 2) (loc and scale are concatenated)
         expanded_static_feat = unsqueeze_expand(
             static_feat, dim=-2, size=lags.shape[-2]
-        )
+        )  # (bsz, context_length+(pred_len-1), 2)
+        # expanded_static_feat: (bsz, context_length+(pred_len-1), len(self.lags_seq) + 2); (bsz, 1); (bsz, 1)
 
-        return torch.cat((lags, expanded_static_feat, time_feat), dim=-1), loc, scale
+        if past_time_feat is not None:
+            return (
+                torch.cat((lags, expanded_static_feat, time_feat), dim=-1),
+                loc,
+                scale,
+            )
+        else:
+            return torch.cat((lags, expanded_static_feat), dim=-1), loc, scale
 
     def forward(
         self,
         past_target: torch.Tensor,
         past_observed_values: torch.Tensor,
-        past_time_feat: torch.Tensor,
-        future_time_feat: torch.Tensor,
+        past_time_feat: Optional[torch.Tensor] = None,
+        future_time_feat: Optional[torch.Tensor] = None,
         future_target: Optional[torch.Tensor] = None,
-        is_test: bool = False,
+        use_kv_cache: bool = False,
+        return_hidden_states: bool = False,
     ) -> torch.Tensor:
+        # if past_time_feat is not None:
         transformer_input, loc, scale = self.prepare_input(
             past_target=past_target,
             past_observed_values=past_observed_values,
             future_target=future_target,
             past_time_feat=past_time_feat,
             future_time_feat=future_time_feat,
-        )
+        )  # return: (bsz, context_length+(pred_len-1), len(self.lags_seq) + 2); (bsz, 1); (bsz, 1)
+        # To use kv cache for inference and pass recent token to transformer
+        if use_kv_cache and self.y_cache:
+            # Only use the most recent one, rest is in cache
+            transformer_input = transformer_input[:, -1:]
 
         # forward the LLaMA model itself
         x = self.transformer.wte(
             transformer_input
-        )  # token embeddings of shape (b, t, n_embd)
+        )  # token embeddings of shape (b, t, n_embd_per_head*n_head) # (bsz, context_length+(pred_len-1), n_embd_per_head*n_head)
 
         for block in self.transformer.h:
-            x = block(x, is_test)
-        x = self.transformer.ln_f(x)
-
-        if self.return_embeddings:
+            x = block(x, use_kv_cache)
+        x = self.transformer.ln_f(
+            x
+        )  # (bsz, context_length+(pred_len-1), n_embd_per_head*n_head)
+        if return_hidden_states:
             return x
         
-        params = self.param_proj(x)
+        if use_kv_cache:
+            self.y_cache = True
+        params = self.param_proj(
+            x
+        )  # (bsz, context_length+(pred_len-1)) ; (bsz, context_length+(pred_len-1))
         return params, loc, scale
 
     def reset_cache(self) -> None:
@@ -555,3 +661,13 @@ class LagLlamaModel(nn.Module):
         for block in self.transformer.h:
             block.y_cache = None
             block.attn.kv_cache = None
+
+    @staticmethod
+    def from_checkpoint(path, **kwargs):
+        state_dict = torch.load(path)
+        model_state_dict = convert_pl_state_dict(state_dict["state_dict"])
+        model_kwargs = state_dict['hyper_parameters']["model_kwargs"]
+        model_kwargs.update(kwargs)
+        model = LagLlamaModel(**model_kwargs)
+        model.load_state_dict(model_state_dict)
+        return model
