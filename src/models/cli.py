@@ -256,5 +256,6 @@ if __name__ == "__main__":
         pass
     cli = CLI(trainer_defaults=trainer_defaults,
             parser_kwargs={"parser_mode": "omegaconf"},
+            save_config_kwargs={"overwrite": True},
             save_config_callback=WandBSaveConfigCallback)
 
