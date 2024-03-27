@@ -134,12 +134,21 @@ class TimesNetEncoder(nn.Module):
         # self.projection = nn.Linear(configs.d_model*configs.seq_len, configs.num_out_tokens) # Only need if we want to project to another # tokens
         self.act = F.gelu
         self.dropout = nn.Dropout(configs.dropout)
+        self.max_length=2000
+        self.min_length=100
     
     def forward(self, ts: torch.Tensor) -> torch.Tensor:
         # --- the following code is straight from the TimesNet implementation for classification ---
         # embedding
-
+        if ts.shape[-1] < self.min_length:
+            pad = ts.new_zeros(ts.shape[0], self.min_length - ts.shape[-1]).to(ts.device)
+            ts = torch.cat([ts, pad], dim=-1)
+        if ts.shape[-1] > self.max_length:
+            ts = ts[..., :self.max_length]
+            
         enc_out = self.enc_embedding(ts.unsqueeze(-1))  # [B,T,C]
+        # Pad to a minumum length T
+        
         for i in range(self.num_layers):
             enc_out = self.layer_norm(self.model[i](enc_out))
 
