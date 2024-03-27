@@ -70,7 +70,8 @@ class MultimodalMCQDataset(ListDataset):
         self.contrastive_column = contrastive_column
         self.context_columns = context_columns
         self.format_abc_mcq = format_abc_mcq
-        self.other_keys = ["ts_qid","uuid","category","question","options"]
+        self.other_keys = ["ts_qid","uuid","category","question", "options_raw"]
+        # self.other_keys = ["ts_qid","uuid","category","question","options"]
         if contrastive_column:
             self.other_keys.append(contrastive_column)
         super().__init__(data)
@@ -98,13 +99,13 @@ class MultimodalMCQDataset(ListDataset):
             full_options = [f"{chr(ord('A') + i)}) {x}" for i, x in enumerate(options)]
             options = [f"{chr(ord('A') + i)}" for i, x in enumerate(options)]
             context = context + "\n" + "\n".join(full_options)
-            answer = f"{chr(ord('A') + label_index)}){options[label_index]}"
+            answer = options[label_index]
 
         else:
             answer = chr(ord('A') + label_index)
 
         if self.contrastive_column:
-            ts = [data[self.ts_column],data[self.contrastive_column]]
+            ts = data[self.ts_column] + data[self.contrastive_column]
         else:
             ts = data[self.ts_column]
 
@@ -113,6 +114,7 @@ class MultimodalMCQDataset(ListDataset):
             "ts" : ts,
             "label" : answer,
             "options" : options,
+            "options_raw": data[self.options_column],
             "label_index" : label_index
         }
 
