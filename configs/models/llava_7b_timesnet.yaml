@@ -1,0 +1,67 @@
+# lightning.pytorch==2.1.2
+seed_everything: true
+trainer:
+  accelerator: cuda
+  strategy: auto
+  devices: -1
+  num_nodes: 1
+  precision: bf16
+  logger: null
+  callbacks: null
+  fast_dev_run: false
+  max_epochs: 10
+  min_epochs: 10
+  limit_train_batches: 100
+  limit_val_batches: 100  
+  max_steps: -1
+  limit_predict_batches: 0
+  val_check_interval: null
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 0
+  log_every_n_steps: 50
+  reload_dataloaders_every_n_epochs: 1
+  default_root_dir: null
+optimizer:
+  lr: 0.0002
+  betas:
+  - 0.9
+  - 0.999
+  eps: 1.0e-08
+  weight_decay: 0.0
+  amsgrad: false
+  foreach: null
+  maximize: false
+  capturable: false
+  differentiable: false
+  fused: null
+checkpoint_metric: val/loss
+checkpoint_mode: min
+early_stopping_patience: 5
+gradient_log_interval: 0
+load_weights_path: null
+freeze_encoder: false
+run_name: llava_7b_timesnet_desc_mcq
+pl_seed: 2494
+no_ckpt: false
+ckpt_path: null
+model:
+  class_path: src.models.models.LLaVA
+  init_args:
+    hf_name_or_path: liuhaotian/llava-v1.5-7b
+    model_name: null
+    encoder_name: timesnet
+    thaw_vision_encoder: false
+    clip_path: null
+    val_bootstraps: 0
+    warmup_steps: 1
+    batch_size: 1
+    compute_metrics: true
+    optimizer: torch.optim.Adam
+    test_results_save_path: null
+    reset_weights_before_fit: false
+lr_scheduler:
+  class_path: pl_bolts.optimizers.lr_scheduler.LinearWarmupCosineAnnealingLR
+  init_args:
+    warmup_epochs: 1
+    max_epochs: ${trainer.max_epochs}
+data: /mmfs1/gscratch/bdata/mikeam/TSandLanguage/configs/tasks/llms_and_ts/ts2desc_mcq.yaml

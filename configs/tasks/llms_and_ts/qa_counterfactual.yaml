@@ -1,0 +1,10 @@
+class_path: src.models.tasks.MultimodalMCQTask 
+init_args:
+  num_classes: 4
+  ts_column: series
+  cache_path: data/processed/counterfactual_qa_mcq
+  context_prefix: "Answer the following question about the time series"
+  context_columns: ["description_tiny", "metadata", "question"]
+  contrastive_column: "new_series"
+  shuffle_labels: False
+  format_abc_mcq: True
