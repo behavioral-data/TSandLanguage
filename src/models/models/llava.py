@@ -651,7 +651,7 @@ class LLaVA(MultimodalModel):
         return torch.vstack(overall_probs).T  # [B, num_classes]
     
     def forward(self,context: List[str], label: List[str], ts: List[np.array], compute_class_probs=None, **kwargs):
-        if np.max(np.abs(ts)) > 1e10:
+        if np.max(np.abs(ts)) > 1e10 or np.sum(ts)==0:
             return None, None
         input_ids, label_ids , ts_emb = self.prepare_inputs(context, label, ts)
         outputs = self.model(input_ids=input_ids, labels=label_ids, images = ts_emb)
@@ -720,7 +720,7 @@ class SpectrogramEncoder(nn.Module):
         
         super().__init__(*args, **kwargs)
         self.dim = dim
-        self.output_shape = output_shape
+        self.output_shape = (3, dim, dim)
         self.pad_val = pad_val
 
     
@@ -729,6 +729,7 @@ class SpectrogramEncoder(nn.Module):
     def forward(self, ts: List[torch.Tensor]) -> torch.Tensor:
         to_return = []
         for t in ts:
+    
             nfft = min(ts.shape[1], max(256, 2 ** math.ceil(math.log2(t.shape[-1]))))
             transform = torchaudio.transforms.Spectrogram(n_fft=nfft).to(t.device)
             spectrogram = transform(t)
@@ -743,7 +744,7 @@ class SpectrogramEncoder(nn.Module):
             spectrogram = spectrogram.repeat(1, 3, 1, 1)
 
             to_return.append(spectrogram)
-        return torch.cat(to_return, dim=0)
+        return torch.concat(to_return, dim=0)
  
 class MatplotlibEncoder(nn.Module):
     """ 
