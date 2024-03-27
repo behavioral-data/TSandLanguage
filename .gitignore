@@ -94,3 +94,4 @@ slurm-utils/jobs
 # Logged data
 checkpoints/
 lightning_logs/
+reports/results/
