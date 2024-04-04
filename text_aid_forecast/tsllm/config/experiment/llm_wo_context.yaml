@@ -1,0 +1,6 @@
+exp_object: llm_wo_context    # 'TS as Plain Text (GPT-4) wo/ Context'
+preprocess: ori_scale
+task: forecast
+data_path: "./datasets/"
+description_type: ''
+num_of_sampels: 2100 
