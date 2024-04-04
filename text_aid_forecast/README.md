@@ -41,7 +41,7 @@ Investigates the influence of different captions as context on the forecasting o
 
 ### TS as Plain Text (GPT-4) w/ or wo/ Context
 
-This method uses the original Large Language Model (LLM), bypassing the LLMTIME approach, to forecast while maintaining the original data scale. It provides insights into the impact of data scaling and context manipulation. 
+This method uses the original Large Language Model (LLM), bypassing the LLMTIME approach, to forecast while maintaining the original data scale. It provides insight into the impact on LLM's reasoning ability when the descriptions in captions are consistent with the data scale.  
 
 `./script/llm_ori_scale.sh`
 
