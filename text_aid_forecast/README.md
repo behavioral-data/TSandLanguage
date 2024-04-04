@@ -19,7 +19,7 @@ Please add the OpenAI base URL to the environment variables.
 ## 🚀Run Forecasting Scripts
 Before running, Please add the project path to the environment variables. 
 
-`export PYTHONPATH="${PYTHONPATH}:<your base path>/textAid_LLM_Forecast/"`
+`export PYTHONPATH="${PYTHONPATH}:<your base path>/test_aid_forecast/"`
 
 ### LLM-TIME (GPT-4) wo/ Context
 
