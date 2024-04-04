@@ -1,0 +1,6 @@
+exp_object: llmtime_wi_Ch   # 'LLM-TIME (GPT-4) w/ Ch'
+preprocess: rescale
+task: forecast
+data_path: "./datasets/"
+description_type: 'characteristics'  
+num_of_sampels: 2100 
