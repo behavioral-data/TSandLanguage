@@ -34,7 +34,7 @@ class GPTmodel(torch.nn.Module):
         Generate text completions from GPT using OpenAI's API.
         """
 
-        #  To prevent GPT-3 from producing unwanted tokens
+        #  To prevent GPTs from producing unwanted tokens
         #  What is allowed : ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ',', '-']
         avg_tokens_per_step = len(self.tokenize_fn(input_str, self.model_name)) / len(input_str.split(self.settings['time_sep']))
         logit_bias = self.get_logit_bias()
