@@ -1,5 +1,7 @@
-from tsllm.utils import get_scaler , truncate_input
-from tsllm.serialize import serialize_arr , ori_scale_serialize 
+import os , sys 
+sys.path.append(os.path.abspath('../../'))
+from src.data.token_utils import get_scaler , truncate_input
+from src.data.serialize import serialize_arr , ori_scale_serialize 
 from omegaconf import open_dict
 import pandas as pd
 import numpy as np 
