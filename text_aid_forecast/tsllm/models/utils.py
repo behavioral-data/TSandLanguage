@@ -1,8 +1,12 @@
 from tsllm.models.gpt import GPTmodel
 from tqdm import tqdm
-from tsllm.serialize import  deserialize_str , ori_scale_deserialize
+
 import numpy as np 
 import pandas as pd
+
+import os , sys 
+sys.path.append(os.path.abspath('../../../'))
+from  src.data.serialize import  deserialize_str , ori_scale_deserialize
 
 '''
     Note that : 
