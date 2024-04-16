@@ -23,14 +23,14 @@ dependencies:
   - tiktoken
   - tqdm
   - omegaconf
-  - hydra
+  - hydra-core
   - pickle
   - pip:
     - einops
     - seaborn
     - git+https://github.com/haotian-liu/LLaVA@a0bdc71
     - wandb 
-    - openai
+    - openai<1.0.0
     - jsonargparse[all]
     - torchaudio
 variables:
