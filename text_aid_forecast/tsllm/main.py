@@ -3,9 +3,13 @@ from omegaconf import DictConfig
 from tsllm.models.utils import load_model_by_name , get_predict_results 
 from tsllm.datasets import get_datasets 
 from tsllm.pre_processing import pre_processing 
-from tsllm.utils import build_save_path  , is_completion
 import os , pickle , time
     
+import os , sys 
+sys.path.append(os.path.abspath('../../'))
+from src.data.token_utils import build_save_path  , is_completion
+
+
 @hydra.main(config_path="config", config_name="config", version_base="1.2")
 def run(config: DictConfig):
     
