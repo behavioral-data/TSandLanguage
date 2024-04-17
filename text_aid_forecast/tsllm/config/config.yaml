@@ -1,0 +1,10 @@
+defaults:  
+  - _self_
+  - experiment: null
+  - model: null
+  
+tags: ~
+device: "cuda:0" 
+scale_size: 0 
+output_dir : './outputs'
+is_test_context_length: False 
