@@ -23,7 +23,7 @@ huggingface-cli login
 ```
 Finally, run this command to save the data to the appropriate directory:
 ```
-huggingface-cli download mikeam/TSandLanguage --repo-type dataset --local-dir data/processed
+huggingface-cli download mikeam/time-series-reasoning --repo-type dataset --local-dir data/processed
 ```
 
 # Running Jobs:
