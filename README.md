@@ -9,11 +9,8 @@ Time Series and Language
 **Note** If you're on the UW Slurm Cluster you will need to first load CUDA by running `module load cuda/12.2`
 
 ## Getting Data
-**If you're on the UW Klone cluster** then you just need to run `make data_on_klone`. This will link the `bdata` directory to the project folder.
 
-**If you're not on the UW cluter** you'll need to use the `huggingface-cli` to download the data. 
-
-First, install the CLI:
+First, install the huggingface CLI:
 ```
  pip install -U "huggingface_hub[cli]"
 ```
@@ -25,6 +22,8 @@ Finally, run this command to save the data to the appropriate directory:
 ```
 huggingface-cli download mikeam/time-series-reasoning --repo-type dataset --local-dir data/processed
 ```
+
+**If you're on the UW Klone cluster** then you just need to run `make data_on_klone`. This will link the `bdata` directory to the project folder.
 
 # Running Jobs:
 
