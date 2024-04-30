@@ -11,9 +11,9 @@ Time Series and Language
 ## Getting Data
 **If you're on the UW Klone cluster** then you just need to run `make data_on_klone`. This will link the `bdata` directory to the project folder.
 
-**If you're not on the UW cluter** you'll need to use the `huggingface-cli` to download the data. First, you'll need to be added to the `bdata` org on huggingface. You can request to join [here](https://huggingface.co/bdata).
+**If you're not on the UW cluter** you'll need to use the `huggingface-cli` to download the data. 
 
-Then, install the CLI:
+First, install the CLI:
 ```
  pip install -U "huggingface_hub[cli]"
 ```
